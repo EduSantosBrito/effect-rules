@@ -3,19 +3,25 @@
   "version": "0.1.0",
   "description": "Custom oxlint rules for Effect TypeScript projects.",
   "files": [
-    "src",
+    "dist",
     "README.md"
   ],
   "type": "module",
-  "main": "./src/index.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
   },
   "scripts": {
+    "build": "bun --bun tsc --outDir dist --declaration",
     "check": "bun --bun tsc --noEmit && bun run lint",
-    "format": "bun --bun oxfmt --write .",
-    "format:check": "bun --bun oxfmt --check .",
-    "lint": "bun --bun oxlint -c .oxlintrc.json ."
+    "format": "bun --bun oxfmt --write package.json tsconfig.json .oxlintrc.json README.md src",
+    "format:check": "bun --bun oxfmt --check package.json tsconfig.json .oxlintrc.json README.md src",
+    "lint": "bun --bun oxlint -c .oxlintrc.json .",
+    "prepack": "bun run build"
   },
   "dependencies": {
     "@oxlint/plugins": "^1.63.0"
