@@ -1,0 +1,9 @@
+[submodule "repos/opencode"]
+	path = .repos/opencode
+	url = https://github.com/anomalyco/opencode
+[submodule "repos/executor"]
+	path = .repos/executor
+	url = https://github.com/rhyssullivan/executor
+[submodule ".repos/t3code"]
+	path = .repos/t3code
+	url = https://github.com/pingdotgg/t3code

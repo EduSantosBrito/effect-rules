@@ -1,0 +1,29 @@
+{
+  "name": "effect-rules",
+  "version": "0.1.0",
+  "description": "Custom oxlint rules for Effect TypeScript projects.",
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "check": "bun --bun tsc --noEmit && bun run lint",
+    "format": "bun --bun oxfmt --write .",
+    "format:check": "bun --bun oxfmt --check .",
+    "lint": "bun --bun oxlint -c .oxlintrc.json ."
+  },
+  "dependencies": {
+    "@oxlint/plugins": "^1.63.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "oxfmt": "^0.48.0",
+    "oxlint": "^1.63.0",
+    "typescript": "^5.9.3"
+  }
+}
