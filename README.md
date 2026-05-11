@@ -64,7 +64,6 @@ For local development before publishing:
 - `effect/no-manual-tag-check`
 - `effect/prefer-schema-tagged-error-class`
 - `effect/prefer-effect-fn`
-- `effect/no-return-yieldable-error`
 - `effect/no-effect-fn-immediate-invocation`
 - `effect/prefer-match-validation`
 - `effect/prefer-match-value`
@@ -123,8 +122,6 @@ export const AuthHttpError = Data.taggedEnum<AuthHttpError>();
 `effect/prefer-schema-tagged-error-class` flags `Data.TaggedError`. Prefer `Schema.TaggedErrorClass` for domain errors.
 
 `effect/prefer-effect-fn` flags reusable functions that return `Effect.gen(...)`. Prefer `Effect.fn("Domain.method")` or `Effect.fnUntraced(...)`.
-
-`effect/no-return-yieldable-error` flags `return yield* domainError` because it infers `undefined` instead of `void`. Prefer `yield* domainError`.
 
 `effect/no-effect-fn-immediate-invocation` flags `Effect.fn(...)(...)()`. Prefer putting parameters on the generator function passed to `Effect.fn`.
 

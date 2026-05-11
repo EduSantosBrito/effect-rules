@@ -239,61 +239,6 @@ describe("prefer-inline-context-service-shape", () => {
   });
 });
 
-describe("no-return-yieldable-error", () => {
-  it("accepts yielding yieldable errors without return", () => {
-    const result = lint(
-      `
-        import { Effect } from "effect";
-
-        export const checkTrustedOrigin = Effect.fn("checkTrustedOrigin")(function* (origin: URL) {
-          const policy = yield* TrustedOriginPolicy;
-          const trusted = yield* policy.isTrusted(origin);
-          if (!trusted) yield* unauthorized;
-        });
-      `,
-      ["effect/no-return-yieldable-error"],
-    );
-
-    assert.strictEqual(result.status, 0, result.output);
-  });
-
-  it("rejects returning yieldable errors", () => {
-    const result = lint(
-      `
-        import { Effect } from "effect";
-
-        export const checkTrustedOrigin = Effect.fn("checkTrustedOrigin")(function* (origin: URL) {
-          const policy = yield* TrustedOriginPolicy;
-          const trusted = yield* policy.isTrusted(origin);
-          if (!trusted) return yield* unauthorized;
-        });
-      `,
-      ["effect/no-return-yieldable-error"],
-    );
-
-    assert.notStrictEqual(result.status, 0);
-    assert.match(result.output, /Do not return yieldable errors/);
-  });
-
-  it("documents that return yieldable errors infer undefined", () => {
-    const result = typeCheck(`
-      ${trustedOriginFixturePreamble}
-
-      const checkTrustedOrigin = (origin: URL) =>
-        Effect.fn("checkTrustedOrigin")(function* () {
-          const policy = yield* TrustedOriginPolicy;
-          const trusted = yield* policy.isTrusted(origin);
-          if (!trusted) return yield* unauthorized;
-        })();
-
-      type Actual = Effect.Success<ReturnType<typeof checkTrustedOrigin>>;
-      type _check = Expect<IsEqual<Actual, undefined>>;
-    `);
-
-    assert.strictEqual(result.status, 0, result.output);
-  });
-});
-
 describe("no-effect-fn-immediate-invocation", () => {
   it("accepts Effect.fn parameters on the generator function", () => {
     const result = lint(

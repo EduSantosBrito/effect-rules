@@ -472,17 +472,6 @@ const returnsEffectFailNew = (value: unknown): boolean => {
   return body.body.some(isReturnEffectFailNewStatement);
 };
 
-const isYieldableErrorExpression = (value: unknown): boolean => {
-  const node = asNode(value);
-  if (node?.type === "Identifier") return true;
-  return node?.type === "NewExpression" && !isBuiltInErrorNewExpression(node);
-};
-
-const isDelegatedYieldOfYieldableError = (value: unknown): boolean => {
-  const node = asNode(value);
-  return node?.type === "YieldExpression" && node.delegate === true && isYieldableErrorExpression(node.argument);
-};
-
 const isEffectFnCall = (value: unknown): boolean => {
   const node = asNode(value);
   return (
@@ -1584,25 +1573,6 @@ const preferEffectFn = defineRule({
   },
 });
 
-const noReturnYieldableError = defineRule({
-  meta: {
-    type: "problem",
-    docs: { description: "Disallow returning yieldable errors from generators." },
-  },
-  createOnce(context) {
-    return {
-      ReturnStatement(node) {
-        if (!isDelegatedYieldOfYieldableError(node.argument)) return;
-        context.report({
-          node,
-          message:
-            "Do not return yieldable errors. Use `yield* error` so the generator returns void, not undefined.",
-        });
-      },
-    };
-  },
-});
-
 const noEffectFnImmediateInvocation = defineRule({
   meta: {
     type: "problem",
@@ -1837,7 +1807,6 @@ export default definePlugin({
     "no-manual-tag-check": noManualTagCheck,
     "prefer-schema-tagged-error-class": preferSchemaTaggedErrorClass,
     "prefer-effect-fn": preferEffectFn,
-    "no-return-yieldable-error": noReturnYieldableError,
     "no-effect-fn-immediate-invocation": noEffectFnImmediateInvocation,
     "prefer-match-validation": preferMatchValidation,
     "prefer-match-value": preferMatchValue,
