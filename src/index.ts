@@ -109,6 +109,10 @@ const isEffectRunner = (value: unknown): boolean => {
   return node?.type === "MemberExpression";
 };
 
+const isTestFilename = (filename: string): boolean =>
+  /(?:^|[/\\])(?:test|tests|__tests__)(?:[/\\]|$)/.test(filename) ||
+  /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(filename);
+
 const isCallToMember = (value: unknown, objectName: string, memberName: string): boolean => {
   const node = asNode(value);
   return node?.type === "CallExpression" && isMember(node.callee, objectName, memberName);
@@ -1228,6 +1232,7 @@ const noEffectRunInTests = defineRule({
   createOnce(context) {
     return {
       CallExpression(node) {
+        if (!isTestFilename(context.filename)) return;
         if (!isEffectRunner(node.callee)) return;
         context.report({
           node,

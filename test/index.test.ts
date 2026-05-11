@@ -10,10 +10,11 @@ const pluginPath = join(root, "src", "index.ts");
 const lint = (
   source: string,
   rules: ReadonlyArray<string> = ["effect/prefer-inline-context-service-shape"],
+  fileName = "fixture.ts",
 ) => {
   const directory = mkdtempSync(join(tmpdir(), "effect-rules-"));
   const configPath = join(directory, ".oxlintrc.json");
-  const sourcePath = join(directory, "fixture.ts");
+  const sourcePath = join(directory, fileName);
 
   writeFileSync(
     configPath,
@@ -293,5 +294,38 @@ describe("no-effect-fn-immediate-invocation", () => {
     `);
 
     assert.strictEqual(result.status, 0, result.output);
+  });
+});
+
+describe("no-effect-run-in-tests", () => {
+  it("accepts manual Effect runners outside test files", () => {
+    const result = lint(
+      `
+        import { Effect } from "effect";
+
+        export const main = () => Effect.runPromise(Effect.void);
+      `,
+      ["effect/no-effect-run-in-tests"],
+      "fixture.ts",
+    );
+
+    assert.strictEqual(result.status, 0, result.output);
+  });
+
+  it("rejects manual Effect runners in test files", () => {
+    const result = lint(
+      `
+        import { Effect } from "effect";
+
+        it("runs", async () => {
+          await Effect.runPromise(Effect.void);
+        });
+      `,
+      ["effect/no-effect-run-in-tests"],
+      "fixture.test.ts",
+    );
+
+    assert.notStrictEqual(result.status, 0);
+    assert.match(result.output, /Use it\.effect/);
   });
 });
