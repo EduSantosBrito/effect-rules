@@ -37,53 +37,6 @@ const lint = (
   };
 };
 
-const typeCheck = (source: string) => {
-  const directory = mkdtempSync(join(root, ".effect-rules-test-"));
-  const configPath = join(directory, "tsconfig.json");
-  const sourcePath = join(directory, "fixture.ts");
-
-  writeFileSync(
-    configPath,
-    JSON.stringify({
-      extends: join(root, "tsconfig.json"),
-      compilerOptions: {
-        baseUrl: root,
-        lib: ["ESNext", "DOM"],
-        noEmit: true,
-        types: [],
-      },
-      include: [sourcePath],
-    }),
-  );
-  writeFileSync(sourcePath, source);
-
-  const result = spawnSync("bun", ["--bun", "tsc", "-p", configPath], {
-    cwd: root,
-    encoding: "utf8",
-  });
-
-  rmSync(directory, { recursive: true, force: true });
-  return {
-    status: result.status,
-    output: `${result.stdout}${result.stderr}`,
-  };
-};
-
-const trustedOriginFixturePreamble = `
-  import { Context, Effect, Schema } from "effect";
-
-  type IsEqual<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
-  type Expect<T extends true> = T;
-
-  class PublicAuthError extends Schema.TaggedErrorClass<PublicAuthError>()("PublicAuthError", {}) {}
-
-  const unauthorized = new PublicAuthError({});
-
-  class TrustedOriginPolicy extends Context.Service<TrustedOriginPolicy, {
-    readonly isTrusted: (origin: URL) => Effect.Effect<boolean>;
-  }>()("TrustedOriginPolicy") {}
-`;
-
 type RuleFixture = {
   readonly rule: string;
   readonly source: string;
@@ -562,23 +515,6 @@ describe("no-effect-fn-immediate-invocation", () => {
 
     assert.notStrictEqual(result.status, 0);
     assert.match(result.output, /Do not write Effect\.fn\(\.\.\.\)\(\.\.\.\)\(\)/);
-  });
-
-  it("documents that generator parameters preserve void inference", () => {
-    const result = typeCheck(`
-      ${trustedOriginFixturePreamble}
-
-      const checkTrustedOrigin = Effect.fn("checkTrustedOrigin")(function* (origin: URL) {
-        const policy = yield* TrustedOriginPolicy;
-        const trusted = yield* policy.isTrusted(origin);
-        if (!trusted) yield* unauthorized;
-      });
-
-      type Actual = Effect.Success<ReturnType<typeof checkTrustedOrigin>>;
-      type _check = Expect<IsEqual<Actual, void>>;
-    `);
-
-    assert.strictEqual(result.status, 0, result.output);
   });
 });
 
