@@ -1,6 +1,6 @@
 {
   "name": "effect-rules",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Custom oxlint rules for Effect TypeScript projects.",
   "repository": {
     "type": "git",

@@ -1,0 +1,2578 @@
+import { defineRule, type Ranged } from "@oxlint/plugins";
+
+type Node = Ranged & {
+  readonly type?: unknown;
+  readonly name?: unknown;
+  readonly value?: unknown;
+  readonly operator?: unknown;
+  readonly object?: unknown;
+  readonly property?: unknown;
+  readonly callee?: unknown;
+  readonly arguments?: ReadonlyArray<unknown>;
+  readonly key?: unknown;
+  readonly optional?: unknown;
+  readonly source?: unknown;
+  readonly specifiers?: ReadonlyArray<unknown>;
+  readonly left?: unknown;
+  readonly right?: unknown;
+  readonly consequent?: unknown;
+  readonly alternate?: unknown;
+  readonly test?: unknown;
+  readonly body?: unknown;
+  readonly expression?: unknown;
+  readonly typeAnnotation?: unknown;
+  readonly typeArguments?: unknown;
+  readonly typeParameters?: unknown;
+  readonly parent?: unknown;
+  readonly properties?: ReadonlyArray<unknown>;
+  readonly declaration?: unknown;
+  readonly init?: unknown;
+  readonly id?: unknown;
+  readonly argument?: unknown;
+  readonly tag?: unknown;
+  readonly imported?: unknown;
+  readonly params?: ReadonlyArray<unknown>;
+  readonly delegate?: unknown;
+  readonly types?: ReadonlyArray<unknown>;
+  readonly literal?: unknown;
+  readonly members?: ReadonlyArray<unknown>;
+  readonly declarations?: ReadonlyArray<unknown>;
+  readonly cases?: ReadonlyArray<unknown>;
+  readonly discriminant?: unknown;
+  readonly superClass?: unknown;
+  readonly static?: unknown;
+  readonly returnType?: unknown;
+  readonly typeName?: unknown;
+  readonly exprName?: unknown;
+};
+
+const isRanged = (value: unknown): value is Ranged =>
+  typeof value === "object" && value !== null && "range" in value;
+
+const asNode = (value: unknown): Node | undefined => {
+  if (typeof value !== "object" || value === null || !("type" in value)) return undefined;
+  if (typeof value.type !== "string" || !isRanged(value)) return undefined;
+  return value;
+};
+
+const isIdentifier = (value: unknown, name?: string): boolean => {
+  const node = asNode(value);
+  return (
+    node?.type === "Identifier" &&
+    typeof node.name === "string" &&
+    (name === undefined || node.name === name)
+  );
+};
+
+const identifierName = (value: unknown): string | undefined => {
+  const node = asNode(value);
+  return node?.type === "Identifier" && typeof node.name === "string" ? node.name : undefined;
+};
+
+const propertyName = (value: unknown): string | undefined => {
+  const node = asNode(value);
+  if (node?.type === "Identifier" && typeof node.name === "string") return node.name;
+  if (node?.type === "PrivateIdentifier" && typeof node.name === "string") return node.name;
+  if (node?.type === "Literal" && typeof node.value === "string") return node.value;
+  return undefined;
+};
+
+const literalValue = (value: unknown): unknown => asNode(value)?.value;
+
+const isMember = (value: unknown, objectName: string, memberName: string): boolean => {
+  const node = asNode(value);
+  return (
+    node?.type === "MemberExpression" &&
+    isIdentifier(node.object, objectName) &&
+    propertyName(node.property) === memberName
+  );
+};
+
+const isEffectMember = (value: unknown, memberName: string): boolean =>
+  isMember(value, "Effect", memberName);
+
+const isEffectVoid = (value: unknown): boolean =>
+  isEffectMember(value, "void") || isEffectMember(value, "unit");
+
+const isEffectRunner = (value: unknown): boolean => {
+  const method = propertyName(asNode(value)?.property);
+  if (
+    method !== "runPromise" &&
+    method !== "runPromiseExit" &&
+    method !== "runSync" &&
+    method !== "runSyncExit"
+  ) {
+    return false;
+  }
+
+  const node = asNode(value);
+  return node?.type === "MemberExpression";
+};
+
+const effectRunnerName = (value: unknown): string | undefined => {
+  const node = asNode(value);
+  if (node?.type !== "MemberExpression" || !isIdentifier(node.object, "Effect")) return undefined;
+  const method = propertyName(node.property);
+  if (
+    method !== "runPromise" &&
+    method !== "runPromiseExit" &&
+    method !== "runSync" &&
+    method !== "runSyncExit"
+  ) {
+    return undefined;
+  }
+  return method;
+};
+
+const isTestFilename = (filename: string): boolean =>
+  /(?:^|[/\\])(?:test|tests|__tests__)(?:[/\\]|$)/.test(filename) ||
+  /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(filename);
+
+const isCallToMember = (value: unknown, objectName: string, memberName: string): boolean => {
+  const node = asNode(value);
+  return node?.type === "CallExpression" && isMember(node.callee, objectName, memberName);
+};
+
+const isEffectCallbackCall = (value: unknown): boolean =>
+  isCallToMember(value, "Effect", "callback");
+
+const isNewExpression = (value: unknown): boolean => asNode(value)?.type === "NewExpression";
+
+const isFunction = (value: unknown): boolean => {
+  const node = asNode(value);
+  return (
+    node?.type === "ArrowFunctionExpression" ||
+    node?.type === "FunctionExpression" ||
+    node?.type === "FunctionDeclaration"
+  );
+};
+
+const isVoidReturningFunction = (value: unknown): boolean => {
+  const node = asNode(value);
+  if (node?.type !== "ArrowFunctionExpression" && node?.type !== "FunctionExpression") return false;
+  if (isEffectVoid(node.body)) return true;
+
+  const body = asNode(node.body);
+  if (body?.type !== "BlockStatement" || !Array.isArray(body.body) || body.body.length !== 1) {
+    return false;
+  }
+
+  const statement = asNode(body.body[0]);
+  return statement?.type === "ReturnStatement" && isEffectVoid(statement.argument);
+};
+
+const isNullCheck = (value: unknown): Node | undefined => {
+  const node = asNode(value);
+  return node?.type === "BinaryExpression" && (node.operator === "!==" || node.operator === "!=")
+    ? node
+    : undefined;
+};
+
+const sameExpression = (left: unknown, right: unknown): boolean => {
+  const leftNode = asNode(left);
+  const rightNode = asNode(right);
+  if (leftNode?.type === "Identifier" && rightNode?.type === "Identifier") {
+    return leftNode.name === rightNode.name;
+  }
+  return left === right;
+};
+
+const checkedNullTarget = (value: unknown): unknown => {
+  const node = isNullCheck(value);
+  if (node === undefined) return undefined;
+  if (literalValue(node.right) === null) return node.left;
+  if (literalValue(node.left) === null) return node.right;
+  return undefined;
+};
+
+const isOptionSomeCall = (value: unknown, target: unknown): boolean => {
+  const node = asNode(value);
+  return (
+    node?.type === "CallExpression" &&
+    isMember(node.callee, "Option", "some") &&
+    Array.isArray(node.arguments) &&
+    node.arguments.length === 1 &&
+    sameExpression(node.arguments[0], target)
+  );
+};
+
+const isOptionNoneCall = (value: unknown): boolean => {
+  const node = asNode(value);
+  return node?.type === "CallExpression" && isMember(node.callee, "Option", "none");
+};
+
+const typeParameterAt = (value: unknown, index: number): Node | undefined => {
+  const node = asNode(value);
+  const typeParameters = asNode(node?.typeParameters) ?? asNode(node?.typeArguments);
+  if (typeParameters === undefined || !Array.isArray(typeParameters.params)) return undefined;
+  return asNode(typeParameters.params[index]);
+};
+
+const typeReferenceName = (value: unknown): string | undefined => {
+  const node = asNode(value);
+  if (node?.type !== "TSTypeReference") return undefined;
+  return typeQueryName(node.typeName);
+};
+
+const typeQueryName = (value: unknown): string | undefined => {
+  const node = asNode(value);
+  if (node === undefined) return undefined;
+  if (node.type === "Identifier" && typeof node.name === "string") return node.name;
+  if (node.type === "TSQualifiedName") {
+    const left = typeQueryName(node.left);
+    const right = typeQueryName(node.right);
+    if (left === undefined || right === undefined) return undefined;
+    return `${left}.${right}`;
+  }
+  return undefined;
+};
+
+const isTypeofInputType = (value: unknown, inputName: string): boolean => {
+  const node = asNode(value);
+  if (node?.type !== "TSTypeQuery") return false;
+  return typeQueryName(node.exprName) === `${inputName}.Type`;
+};
+
+const typeAnnotation = (value: unknown): Node | undefined => {
+  const annotation = asNode(asNode(value)?.typeAnnotation);
+  return annotation?.type === "TSTypeAnnotation" ? asNode(annotation.typeAnnotation) : undefined;
+};
+
+const hasCallableOrEffectMember = (serviceShape: Node): boolean => {
+  if (!Array.isArray(serviceShape.members)) return false;
+  return serviceShape.members.some((memberValue) => {
+    const member = asNode(memberValue);
+    if (member?.type !== "TSPropertySignature") return false;
+    const annotation = typeAnnotation(member);
+    if (annotation?.type === "TSFunctionType") return true;
+    return typeReferenceName(annotation) === "Effect.Effect";
+  });
+};
+
+const expressionName = (value: unknown): string | undefined => {
+  const node = asNode(value);
+  if (node === undefined) return undefined;
+  if (node.type === "Identifier" && typeof node.name === "string") return node.name;
+  if (node.type !== "MemberExpression") return undefined;
+  const objectName = expressionName(node.object);
+  const memberName = propertyName(node.property);
+  if (objectName === undefined || memberName === undefined) return undefined;
+  return `${objectName}.${memberName}`;
+};
+
+const isInputMakeCall = (value: unknown, inputName: string, parameterName: string): boolean => {
+  const node = asNode(value);
+  return (
+    node?.type === "CallExpression" &&
+    expressionName(node.callee) === `${inputName}.make` &&
+    Array.isArray(node.arguments) &&
+    node.arguments.length === 1 &&
+    isIdentifier(node.arguments[0], parameterName)
+  );
+};
+
+const inputMakeCallName = (value: unknown, parameterName: string): string | undefined => {
+  const node = asNode(value);
+  if (
+    node?.type !== "CallExpression" ||
+    !Array.isArray(node.arguments) ||
+    node.arguments.length !== 1 ||
+    !isIdentifier(node.arguments[0], parameterName)
+  ) {
+    return undefined;
+  }
+
+  const calleeName = expressionName(node.callee);
+  return calleeName?.endsWith(".make") === true ? calleeName.slice(0, -".make".length) : undefined;
+};
+
+const isLayerSucceedInputMake = (
+  value: unknown,
+  serviceName: string,
+  inputName: string,
+  parameterName: string,
+): boolean => {
+  const outer = asNode(value);
+  const inner = asNode(outer?.callee);
+  return (
+    outer?.type === "CallExpression" &&
+    Array.isArray(outer.arguments) &&
+    outer.arguments.length === 1 &&
+    isInputMakeCall(outer.arguments[0], inputName, parameterName) &&
+    inner?.type === "CallExpression" &&
+    isMember(inner.callee, "Layer", "succeed") &&
+    Array.isArray(inner.arguments) &&
+    inner.arguments.length === 1 &&
+    isIdentifier(inner.arguments[0], serviceName)
+  );
+};
+
+const layerSucceedInputMakeName = (
+  value: unknown,
+  serviceName: string,
+  parameterName: string,
+): string | undefined => {
+  const outer = asNode(value);
+  const inner = asNode(outer?.callee);
+  if (
+    outer?.type !== "CallExpression" ||
+    !Array.isArray(outer.arguments) ||
+    outer.arguments.length !== 1 ||
+    inner?.type !== "CallExpression" ||
+    !isMember(inner.callee, "Layer", "succeed") ||
+    !Array.isArray(inner.arguments) ||
+    inner.arguments.length !== 1 ||
+    !isIdentifier(inner.arguments[0], serviceName)
+  ) {
+    return undefined;
+  }
+  return inputMakeCallName(outer.arguments[0], parameterName);
+};
+
+const isConfigDeclaration = (value: unknown, inputName: string, parameterName: string): boolean => {
+  const node = asNode(value);
+  const declaration = asNode(node?.declaration);
+  if (node?.type !== "VariableDeclaration" || declaration !== undefined) return false;
+  if (!Array.isArray(node.declarations) || node.declarations.length !== 1) return false;
+  const declarator = asNode(node.declarations[0]);
+  return (
+    declarator?.type === "VariableDeclarator" &&
+    isIdentifier(declarator.id, "config") &&
+    isInputMakeCall(declarator.init, inputName, parameterName)
+  );
+};
+
+const configDeclarationInputName = (value: unknown, parameterName: string): string | undefined => {
+  const node = asNode(value);
+  const declaration = asNode(node?.declaration);
+  if (node?.type !== "VariableDeclaration" || declaration !== undefined) return undefined;
+  if (!Array.isArray(node.declarations) || node.declarations.length !== 1) return undefined;
+  const declarator = asNode(node.declarations[0]);
+  if (declarator?.type !== "VariableDeclarator" || !isIdentifier(declarator.id, "config")) {
+    return undefined;
+  }
+  return inputMakeCallName(declarator.init, parameterName);
+};
+
+const objectHasConfigSpread = (value: unknown): boolean => {
+  const node = asNode(value);
+  return (
+    node?.type === "ObjectExpression" &&
+    Array.isArray(node.properties) &&
+    node.properties.some((property) => {
+      const propertyNode = asNode(property);
+      return (
+        propertyNode?.type === "SpreadElement" && isIdentifier(propertyNode.argument, "config")
+      );
+    })
+  );
+};
+
+const isServiceOfConfigObject = (value: unknown, serviceName: string): boolean => {
+  const node = asNode(value);
+  return (
+    node?.type === "CallExpression" &&
+    expressionName(node.callee) === `${serviceName}.of` &&
+    Array.isArray(node.arguments) &&
+    node.arguments.length === 1 &&
+    objectHasConfigSpread(node.arguments[0])
+  );
+};
+
+const isConfigBlockLayer = (
+  value: unknown,
+  serviceName: string,
+  inputName: string,
+  parameterName: string,
+): boolean => {
+  const node = asNode(value);
+  if (node?.type !== "BlockStatement" || !Array.isArray(node.body)) return false;
+  if (!node.body.some((statement) => isConfigDeclaration(statement, inputName, parameterName))) {
+    return false;
+  }
+  return node.body.some((statementValue) => {
+    const statement = asNode(statementValue);
+    return (
+      statement?.type === "ReturnStatement" &&
+      isServiceOfConfigObject(statement.argument, serviceName)
+    );
+  });
+};
+
+const isContextServiceSuperclass = (value: unknown): Node | undefined => {
+  const outer = asNode(value);
+  const serviceCall = asNode(outer?.callee);
+  if (outer?.type !== "CallExpression" || serviceCall?.type !== "CallExpression") return undefined;
+  return isContextServiceCall(serviceCall) ? serviceCall : undefined;
+};
+
+const isContextServiceCall = (value: unknown): boolean => {
+  const node = asNode(value);
+  return node?.type === "CallExpression" && isMember(node.callee, "Context", "Service");
+};
+
+const contextServiceTag = (value: unknown): string | undefined => {
+  const outer = asNode(value);
+  if (outer?.type !== "CallExpression" || !Array.isArray(outer.arguments)) return undefined;
+  const tag = literalValue(outer.arguments[0]);
+  return typeof tag === "string" ? tag : undefined;
+};
+
+const isNamespacedServiceTag = (tag: string, serviceName: string): boolean => {
+  const parts = tag.split("/");
+  return (
+    parts.length >= 2 &&
+    parts.every((part) => part.length > 0) &&
+    parts[parts.length - 1] === serviceName
+  );
+};
+
+const staticLayerInitializer = (classDeclaration: Node): Node | undefined => {
+  const body = asNode(classDeclaration.body);
+  if (body?.type !== "ClassBody" || !Array.isArray(body.body)) return undefined;
+
+  for (const memberValue of body.body) {
+    const member = asNode(memberValue);
+    if (member?.static !== true || propertyName(member.key) !== "layer") continue;
+    if (member.value !== undefined) return asNode(member.value);
+  }
+  return undefined;
+};
+
+const singleParameterName = (value: unknown): string | undefined => {
+  const node = asNode(value);
+  if (
+    node === undefined ||
+    !isFunction(node) ||
+    !Array.isArray(node.params) ||
+    node.params.length !== 1
+  ) {
+    return undefined;
+  }
+  return identifierName(node.params[0]);
+};
+
+const hasInputTypeParameter = (value: unknown, inputName: string): boolean => {
+  const node = asNode(value);
+  if (
+    node === undefined ||
+    !isFunction(node) ||
+    !Array.isArray(node.params) ||
+    node.params.length !== 1
+  ) {
+    return false;
+  }
+  return isTypeofInputType(typeAnnotation(node.params[0]), inputName);
+};
+
+const inputTypeParameterName = (value: unknown): string | undefined => {
+  const node = asNode(value);
+  if (
+    node === undefined ||
+    !isFunction(node) ||
+    !Array.isArray(node.params) ||
+    node.params.length !== 1
+  ) {
+    return undefined;
+  }
+
+  const annotation = asNode(typeAnnotation(node.params[0]));
+  if (annotation?.type !== "TSTypeQuery") return undefined;
+  const name = typeQueryName(annotation.exprName);
+  return name?.endsWith(".Type") === true ? name.slice(0, -".Type".length) : undefined;
+};
+
+const schemaInputNameFromLayer = (
+  value: unknown,
+  serviceName: string,
+  parameterName: string,
+): string | undefined => {
+  const annotationInputName = inputTypeParameterName(value);
+  if (annotationInputName !== undefined) return annotationInputName;
+
+  const node = asNode(value);
+  const body = asNode(node?.body);
+  const directInputName = layerSucceedInputMakeName(body, serviceName, parameterName);
+  if (directInputName !== undefined) return directInputName;
+
+  if (body?.type !== "BlockStatement" || !Array.isArray(body.body)) return undefined;
+  for (const statement of body.body) {
+    const inputName = configDeclarationInputName(statement, parameterName);
+    if (inputName !== undefined) return inputName;
+  }
+  return undefined;
+};
+
+const isEffectGenCall = (value: unknown): boolean => isCallToMember(value, "Effect", "gen");
+
+const staticEffectMembers = new Set([
+  "fail",
+  "gen",
+  "log",
+  "logDebug",
+  "logError",
+  "logInfo",
+  "logTrace",
+  "logWarning",
+  "succeed",
+  "sync",
+  "unit",
+  "void",
+]);
+
+const isStaticEffectExpression = (value: unknown): boolean => {
+  const node = asNode(value);
+  const member = node?.type === "CallExpression" ? asNode(node.callee) : node;
+  const name = propertyName(asNode(member)?.property);
+  return isIdentifier(asNode(member)?.object, "Effect") && staticEffectMembers.has(name ?? "");
+};
+
+const returnsStaticEffectCall = (value: unknown): boolean => {
+  const node = asNode(value);
+  if (node?.type !== "ArrowFunctionExpression" && node?.type !== "FunctionExpression") return false;
+  if (!Array.isArray(node.params) || node.params.length !== 0) return false;
+  if (isStaticEffectExpression(node.body)) return true;
+
+  const body = asNode(node.body);
+  if (body?.type !== "BlockStatement" || !Array.isArray(body.body) || body.body.length !== 1) {
+    return false;
+  }
+
+  const statement = asNode(body.body[0]);
+  return statement?.type === "ReturnStatement" && isStaticEffectExpression(statement.argument);
+};
+
+const isPubSubSubscribeCall = (value: unknown): boolean => {
+  const node = asNode(value);
+  if (node?.type !== "CallExpression") return false;
+  if (isMember(node.callee, "PubSub", "subscribe")) return true;
+
+  const callee = asNode(node.callee);
+  const objectName = expressionName(callee?.object)?.toLowerCase();
+  return (
+    callee?.type === "MemberExpression" &&
+    propertyName(callee.property) === "subscribe" &&
+    objectName?.includes("pubsub") === true
+  );
+};
+
+const isEffectAnnotateLogsCall = (value: unknown): boolean =>
+  isCallToMember(value, "Effect", "annotateLogs");
+
+const hasAnnotateLogsPipe = (value: unknown): boolean => {
+  const node = asNode(value);
+  if (node?.type !== "CallExpression") return false;
+  const callee = asNode(node.callee);
+  return (
+    callee?.type === "MemberExpression" &&
+    propertyName(callee.property) === "pipe" &&
+    Array.isArray(node.arguments) &&
+    node.arguments.some(isEffectAnnotateLogsCall)
+  );
+};
+
+const pipedEffectGen = (value: unknown): Node | undefined => {
+  const node = asNode(value);
+  if (node?.type !== "CallExpression") return undefined;
+  const callee = asNode(node.callee);
+  if (callee?.type !== "MemberExpression" || propertyName(callee.property) !== "pipe")
+    return undefined;
+  return isEffectGenCall(callee.object) ? asNode(callee.object) : undefined;
+};
+
+const isUnknownKeyword = (value: unknown): boolean => asNode(value)?.type === "TSUnknownKeyword";
+
+const isEffectTypeWithUnknownRequirement = (value: unknown): boolean => {
+  const node = asNode(value);
+  if (node?.type !== "TSTypeReference") return false;
+  const name = typeReferenceName(node);
+  if (name !== "Effect.Effect" && name !== "Effect") return false;
+  return isUnknownKeyword(typeParameterAt(node, 2));
+};
+
+const isTransactionalApi = (value: unknown): boolean => {
+  const node = asNode(value);
+  if (node?.type !== "MemberExpression") return false;
+  if (isIdentifier(node.object, "Effect")) {
+    const name = propertyName(node.property);
+    return name === "txRetry" || name === "Transaction";
+  }
+  const object = asNode(node.object);
+  return (
+    object?.type === "Identifier" && typeof object.name === "string" && /^Tx[A-Z]/.test(object.name)
+  );
+};
+
+const containsTransactionalApi = (value: unknown, seen = new Set<unknown>()): boolean => {
+  if (typeof value !== "object" || value === null || seen.has(value)) return false;
+  seen.add(value);
+
+  const node = asNode(value);
+  if (node !== undefined && isTransactionalApi(node)) return true;
+
+  for (const [key, child] of Object.entries(value)) {
+    if (key === "parent" || key === "range") continue;
+    if (Array.isArray(child)) {
+      if (child.some((item) => containsTransactionalApi(item, seen))) return true;
+      continue;
+    }
+    if (containsTransactionalApi(child, seen)) return true;
+  }
+  return false;
+};
+
+const containsCallProperty = (
+  value: unknown,
+  properties: ReadonlySet<string>,
+  seen = new Set<unknown>(),
+): boolean => {
+  if (typeof value !== "object" || value === null || seen.has(value)) return false;
+  seen.add(value);
+
+  const node = asNode(value);
+  if (node?.type === "CallExpression") {
+    const callee = asNode(node.callee);
+    if (callee?.type === "MemberExpression") {
+      const name = propertyName(callee.property);
+      if (name !== undefined && properties.has(name)) return true;
+    }
+    if (isIdentifier(node.callee)) {
+      const name = identifierName(node.callee);
+      if (name !== undefined && properties.has(name)) return true;
+    }
+  }
+
+  for (const [key, child] of Object.entries(value)) {
+    if (key === "parent" || key === "range") continue;
+    if (Array.isArray(child)) {
+      if (child.some((item) => containsCallProperty(item, properties, seen))) return true;
+      continue;
+    }
+    if (containsCallProperty(child, properties, seen)) return true;
+  }
+  return false;
+};
+
+const containsIdentifierName = (
+  value: unknown,
+  name: string,
+  seen = new Set<unknown>(),
+): boolean => {
+  if (typeof value !== "object" || value === null || seen.has(value)) return false;
+  seen.add(value);
+
+  if (isIdentifier(value, name)) return true;
+
+  for (const [key, child] of Object.entries(value)) {
+    if (key === "parent" || key === "range" || key === "key") continue;
+    if (Array.isArray(child)) {
+      if (child.some((item) => containsIdentifierName(item, name, seen))) return true;
+      continue;
+    }
+    if (containsIdentifierName(child, name, seen)) return true;
+  }
+  return false;
+};
+
+const schemaErrorCatchTagHandler = (node: Node): Node | undefined => {
+  if (node.type !== "CallExpression" || !Array.isArray(node.arguments)) return undefined;
+  if (!isEffectMember(node.callee, "catchTag")) return undefined;
+  if (literalValue(node.arguments[0]) === "SchemaError") return asNode(node.arguments[1]);
+  if (literalValue(node.arguments[1]) === "SchemaError") return asNode(node.arguments[2]);
+  return undefined;
+};
+
+const isHttpJsonResponseCall = (value: unknown): boolean => {
+  const node = asNode(value);
+  if (node?.type !== "CallExpression") return false;
+  const callee = asNode(node.callee);
+  if (callee?.type !== "MemberExpression") return false;
+  const name = propertyName(callee.property);
+  if (name !== "json" && name !== "jsonUnsafe") return false;
+  return expressionName(callee.object) === "HttpServerResponse";
+};
+
+const containsHttpJsonResponseLeaking = (
+  value: unknown,
+  name: string,
+  seen = new Set<unknown>(),
+): boolean => {
+  if (typeof value !== "object" || value === null || seen.has(value)) return false;
+  seen.add(value);
+
+  const node = asNode(value);
+  if (isHttpJsonResponseCall(node) && Array.isArray(node?.arguments)) {
+    return node.arguments.some((argument) => containsIdentifierName(argument, name));
+  }
+
+  for (const [key, child] of Object.entries(value)) {
+    if (key === "parent" || key === "range") continue;
+    if (Array.isArray(child)) {
+      if (child.some((item) => containsHttpJsonResponseLeaking(item, name, seen))) return true;
+      continue;
+    }
+    if (containsHttpJsonResponseLeaking(child, name, seen)) return true;
+  }
+  return false;
+};
+
+const handlerLeaksSchemaErrorResponse = (value: unknown): boolean => {
+  const node = asNode(value);
+  if (node === undefined || !isFunction(node) || !Array.isArray(node.params)) return false;
+  const errorName = identifierName(node.params[0]);
+  if (errorName === undefined) return false;
+  return containsHttpJsonResponseLeaking(node.body, errorName);
+};
+
+const rawIndexedDbCallNames = new Set([
+  "indexedDB.cmp",
+  "indexedDB.deleteDatabase",
+  "indexedDB.open",
+  "window.indexedDB.cmp",
+  "window.indexedDB.deleteDatabase",
+  "window.indexedDB.open",
+  "globalThis.indexedDB.cmp",
+  "globalThis.indexedDB.deleteDatabase",
+  "globalThis.indexedDB.open",
+  "IDBKeyRange.bound",
+  "IDBKeyRange.lowerBound",
+  "IDBKeyRange.only",
+  "IDBKeyRange.upperBound",
+  "window.IDBKeyRange.bound",
+  "window.IDBKeyRange.lowerBound",
+  "window.IDBKeyRange.only",
+  "window.IDBKeyRange.upperBound",
+  "globalThis.IDBKeyRange.bound",
+  "globalThis.IDBKeyRange.lowerBound",
+  "globalThis.IDBKeyRange.only",
+  "globalThis.IDBKeyRange.upperBound",
+]);
+
+const isRawIndexedDbMember = (value: unknown): boolean => {
+  const name = expressionName(value);
+  return name === "window.indexedDB" || name === "globalThis.indexedDB";
+};
+
+const layerProvideMethods = new Set([
+  "provide",
+  "provideMerge",
+  "provideService",
+  "provideContext",
+]);
+
+const hasInlineLayerProvide = (value: unknown): boolean => {
+  const node = asNode(value);
+  if (node?.type !== "CallExpression") return false;
+  const callee = asNode(node.callee);
+  if (callee?.type !== "MemberExpression") return false;
+  const method = propertyName(callee.property);
+  if (method === "pipe" && Array.isArray(node.arguments)) {
+    return node.arguments.some((argument) => {
+      const argumentNode = asNode(argument);
+      if (argumentNode?.type !== "CallExpression") return false;
+      const argumentCallee = asNode(argumentNode.callee);
+      if (argumentCallee?.type !== "MemberExpression") return false;
+      const argumentMethod = propertyName(argumentCallee.property);
+      return (
+        argumentMethod !== undefined &&
+        layerProvideMethods.has(argumentMethod) &&
+        (isIdentifier(argumentCallee.object, "Effect") ||
+          isIdentifier(argumentCallee.object, "Layer"))
+      );
+    });
+  }
+  return (
+    method !== undefined &&
+    layerProvideMethods.has(method) &&
+    (isIdentifier(callee.object, "Effect") || isIdentifier(callee.object, "Layer"))
+  );
+};
+
+const effectRunnerInlineProvidedArgument = (node: Node): Node | undefined => {
+  if (node.type !== "CallExpression" || effectRunnerName(node.callee) === undefined)
+    return undefined;
+  if (!Array.isArray(node.arguments) || node.arguments.length === 0) return undefined;
+  const argument = node.arguments[0];
+  return hasInlineLayerProvide(argument) ? asNode(argument) : undefined;
+};
+
+const callbackRegistrationMethods = new Set([
+  "addEventListener",
+  "listen",
+  "on",
+  "once",
+  "setInterval",
+  "setTimeout",
+]);
+
+const functionReturnsCleanup = (value: unknown): boolean => {
+  const node = asNode(value);
+  if (node?.type !== "ArrowFunctionExpression" && node?.type !== "FunctionExpression") return false;
+  if (isStaticEffectExpression(node.body)) return true;
+
+  const body = asNode(node.body);
+  if (body?.type !== "BlockStatement" || !Array.isArray(body.body)) return false;
+  return body.body.some((statementValue) => {
+    const statement = asNode(statementValue);
+    return statement?.type === "ReturnStatement" && asNode(statement.argument) !== undefined;
+  });
+};
+
+const effectCallbackNeedingCleanup = (node: Node): Node | undefined => {
+  if (
+    !isEffectCallbackCall(node) ||
+    !Array.isArray(node.arguments) ||
+    node.arguments.length === 0
+  ) {
+    return undefined;
+  }
+  const callback = asNode(node.arguments[0]);
+  if (callback === undefined) return undefined;
+  if (!containsCallProperty(callback, callbackRegistrationMethods)) return undefined;
+  if (functionReturnsCleanup(callback)) return undefined;
+  return callback;
+};
+
+const tempResourceMethods = new Set(["makeTempDirectory", "makeTempFile"]);
+const tempCleanupMethods = new Set(["remove", "rm", "unlink"]);
+
+const isUnscopedTempResourceCall = (node: Node): boolean => {
+  if (node.type !== "CallExpression") return false;
+  const callee = asNode(node.callee);
+  return (
+    callee?.type === "MemberExpression" &&
+    tempResourceMethods.has(propertyName(callee.property) ?? "")
+  );
+};
+
+const enclosingFunctionBody = (value: unknown): Node | undefined => {
+  let current = asNode(value);
+  while (current !== undefined) {
+    if (isFunction(current)) return asNode(current.body);
+    current = asNode(current.parent);
+  }
+  return undefined;
+};
+
+const semaphoreAcquireEffectArgument = (node: Node): unknown => {
+  if (node.type !== "CallExpression" || !Array.isArray(node.arguments)) return undefined;
+
+  const callee = asNode(node.callee);
+  if (callee?.type === "MemberExpression") {
+    const method = propertyName(callee.property);
+    if (method === "withPermits" && isIdentifier(callee.object, "Semaphore")) {
+      return node.arguments[2];
+    }
+    if (method === "withPermit" && isIdentifier(callee.object, "Semaphore"))
+      return node.arguments[1];
+    if (method === "withPermit" && node.arguments.length >= 1) return node.arguments[0];
+  }
+
+  const curried = asNode(callee);
+  if (curried?.type === "CallExpression" && Array.isArray(curried.arguments)) {
+    const curriedCallee = asNode(curried.callee);
+    if (curriedCallee?.type !== "MemberExpression") return undefined;
+    const method = propertyName(curriedCallee.property);
+    if (method === "withPermit" || method === "withPermits") return node.arguments[0];
+  }
+
+  return undefined;
+};
+
+const isSemaphoreAcquireCall = (value: unknown): boolean => {
+  const node = asNode(value);
+  if (node === undefined) return false;
+  return asNode(semaphoreAcquireEffectArgument(node)) !== undefined;
+};
+
+const containsNestedSemaphoreAcquire = (value: unknown, seen = new Set<unknown>()): boolean => {
+  if (typeof value !== "object" || value === null || seen.has(value)) return false;
+  seen.add(value);
+
+  const node = asNode(value);
+  if (node !== undefined && isSemaphoreAcquireCall(node)) return true;
+
+  for (const [key, child] of Object.entries(value)) {
+    if (key === "parent" || key === "range") continue;
+    if (Array.isArray(child)) {
+      if (child.some((item) => containsNestedSemaphoreAcquire(item, seen))) return true;
+      continue;
+    }
+    if (containsNestedSemaphoreAcquire(child, seen)) return true;
+  }
+  return false;
+};
+
+const isInspectableTxArgument = (value: unknown): boolean => {
+  const node = asNode(value);
+  if (node?.type !== "CallExpression") return false;
+  if (isEffectGenCall(node)) return true;
+  return isIdentifier(asNode(node.callee)?.object, "Effect");
+};
+
+const isEffectFailNewExpression = (value: unknown): boolean => {
+  const node = asNode(value);
+  return (
+    node?.type === "CallExpression" &&
+    isEffectMember(node.callee, "fail") &&
+    Array.isArray(node.arguments) &&
+    isNewExpression(node.arguments[0])
+  );
+};
+
+const returnsEffectGen = (value: unknown): boolean => {
+  const node = asNode(value);
+  if (node?.type !== "ArrowFunctionExpression" && node?.type !== "FunctionExpression") return false;
+  if (isEffectGenCall(node.body)) return true;
+
+  const body = asNode(node.body);
+  if (body?.type !== "BlockStatement" || !Array.isArray(body.body)) return false;
+
+  for (const statementValue of body.body) {
+    const statement = asNode(statementValue);
+    if (statement?.type === "ReturnStatement" && isEffectGenCall(statement.argument)) return true;
+  }
+  return false;
+};
+
+const isDataTaggedErrorCall = (value: unknown): boolean =>
+  isCallToMember(value, "Data", "TaggedError");
+
+const isMatchWhenCall = (value: unknown): boolean => {
+  const node = asNode(value);
+  if (node?.type !== "CallExpression") return false;
+  return (
+    isMember(node.callee, "Match", "when") ||
+    isMember(node.callee, "Match", "whenOr") ||
+    isMember(node.callee, "Match", "whenAnd")
+  );
+};
+
+const isReturnEffectFailNewStatement = (value: unknown): boolean => {
+  const node = asNode(value);
+  return node?.type === "ReturnStatement" && isEffectFailNewExpression(node.argument);
+};
+
+const returnsEffectFailNew = (value: unknown): boolean => {
+  const node = asNode(value);
+  if (node?.type !== "ArrowFunctionExpression" && node?.type !== "FunctionExpression") return false;
+  if (isEffectFailNewExpression(node.body)) return true;
+  const body = asNode(node.body);
+  if (body?.type !== "BlockStatement" || !Array.isArray(body.body)) return false;
+  return body.body.some(isReturnEffectFailNewStatement);
+};
+
+const isEffectFnCall = (value: unknown): boolean => {
+  const node = asNode(value);
+  return (
+    node?.type === "CallExpression" &&
+    (isEffectMember(node.callee, "fn") || isEffectMember(node.callee, "fnUntraced"))
+  );
+};
+
+const isEffectFnImplementationCall = (value: unknown): boolean => {
+  const node = asNode(value);
+  return node?.type === "CallExpression" && isEffectFnCall(node.callee);
+};
+
+const ifConsequentReturnsEffectFailNew = (value: unknown): boolean => {
+  const node = asNode(value);
+  if (node?.type !== "IfStatement") return false;
+  if (isReturnEffectFailNewStatement(node.consequent)) return true;
+  const consequent = asNode(node.consequent);
+  return (
+    consequent?.type === "BlockStatement" &&
+    Array.isArray(consequent.body) &&
+    consequent.body.some(isReturnEffectFailNewStatement)
+  );
+};
+
+const returnsEffectVoid = (value: unknown): boolean => {
+  const node = asNode(value);
+  return node?.type === "ReturnStatement" && isEffectVoid(node.argument);
+};
+
+const isValidationFailureLadder = (value: unknown): boolean => {
+  const node = asNode(value);
+  if (node?.type !== "ArrowFunctionExpression" && node?.type !== "FunctionExpression") return false;
+  const body = asNode(node.body);
+  if (body?.type !== "BlockStatement" || !Array.isArray(body.body)) return false;
+
+  let failureBranches = 0;
+  let hasSuccessReturn = false;
+  for (const statement of body.body) {
+    if (ifConsequentReturnsEffectFailNew(statement)) failureBranches++;
+    if (returnsEffectVoid(statement)) hasSuccessReturn = true;
+  }
+  return failureBranches >= 2 && hasSuccessReturn;
+};
+
+const schemaCompilerMethods = new Set([
+  "is",
+  "asserts",
+  "decodeEffect",
+  "decodeExit",
+  "decodeOption",
+  "decodePromise",
+  "decodeSync",
+  "decodeUnknownExit",
+  "decodeUnknownEffect",
+  "decodeUnknownOption",
+  "decodeUnknownPromise",
+  "decodeUnknownSync",
+  "encodeExit",
+  "encodeEffect",
+  "encodeOption",
+  "encodePromise",
+  "encodeSync",
+  "encodeUnknownExit",
+  "encodeUnknownEffect",
+  "encodeUnknownOption",
+  "encodeUnknownPromise",
+  "encodeUnknownSync",
+]);
+
+const schemaCompilerMethod = (value: unknown): string | undefined => {
+  const node = asNode(value);
+  if (node?.type !== "MemberExpression" || !isIdentifier(node.object, "Schema")) return undefined;
+  const method = propertyName(node.property);
+  return method !== undefined && schemaCompilerMethods.has(method) ? method : undefined;
+};
+
+const builtInErrorConstructors = new Set([
+  "AggregateError",
+  "Error",
+  "EvalError",
+  "RangeError",
+  "ReferenceError",
+  "SyntaxError",
+  "TypeError",
+  "URIError",
+]);
+
+const isBuiltInErrorConstructor = (value: unknown): boolean => {
+  const node = asNode(value);
+  return node?.type === "Identifier" && typeof node.name === "string"
+    ? builtInErrorConstructors.has(node.name)
+    : false;
+};
+
+const isBuiltInErrorNewExpression = (value: unknown): boolean => {
+  const node = asNode(value);
+  return node?.type === "NewExpression" && isBuiltInErrorConstructor(node.callee);
+};
+
+const hasParentEffectFailCall = (value: unknown): boolean => {
+  const node = asNode(value);
+  const parent = asNode(node?.parent);
+  return parent?.type === "CallExpression" && isEffectMember(parent.callee, "fail");
+};
+
+const hasParentThrowStatement = (value: unknown): boolean => {
+  const node = asNode(value);
+  return asNode(node?.parent)?.type === "ThrowStatement";
+};
+
+const isPromiseReject = (value: unknown): boolean => isMember(value, "Promise", "reject");
+
+const isPromiseConstructor = (value: unknown): boolean => {
+  const node = asNode(value);
+  return node?.type === "NewExpression" && isIdentifier(node.callee, "Promise");
+};
+
+const isErrorLikeIdentifier = (value: unknown): boolean => {
+  const node = asNode(value);
+  if (node?.type !== "Identifier" || typeof node.name !== "string") return false;
+  return ["cause", "e", "err", "error", "reason", "unknownError"].includes(node.name);
+};
+
+const isTagProperty = (value: unknown): boolean => propertyName(value) === "_tag";
+
+const isStringLiteralType = (value: unknown): boolean => {
+  const node = asNode(value);
+  return node?.type === "TSLiteralType" && typeof literalValue(node.literal) === "string";
+};
+
+const isTagPropertySignature = (value: unknown): boolean => {
+  const node = asNode(value);
+  if (node?.type !== "TSPropertySignature" || !isTagProperty(node.key)) return false;
+  const annotation = asNode(node.typeAnnotation);
+  return annotation?.type === "TSTypeAnnotation" && isStringLiteralType(annotation.typeAnnotation);
+};
+
+const isTaggedTypeLiteral = (value: unknown): boolean => {
+  const node = asNode(value);
+  return (
+    node?.type === "TSTypeLiteral" &&
+    Array.isArray(node.members) &&
+    node.members.some(isTagPropertySignature)
+  );
+};
+
+const isStringCase = (value: unknown): boolean => {
+  const node = asNode(value);
+  return node?.type === "SwitchCase" && typeof literalValue(node.test) === "string";
+};
+
+const isReturnStatement = (value: unknown): boolean => asNode(value)?.type === "ReturnStatement";
+
+const isReturnOnlyStringSwitch = (value: unknown): boolean => {
+  const node = asNode(value);
+  return (
+    node?.type === "SwitchStatement" &&
+    Array.isArray(node.cases) &&
+    node.cases.length >= 2 &&
+    node.cases.every((caseValue) => {
+      const switchCase = asNode(caseValue);
+      if (switchCase === undefined) return false;
+      return (
+        isStringCase(switchCase) &&
+        Array.isArray(switchCase.consequent) &&
+        switchCase.consequent.length === 1 &&
+        switchCase.consequent.every(isReturnStatement)
+      );
+    })
+  );
+};
+
+const isTaggedUnionType = (value: unknown): boolean => {
+  const node = asNode(value);
+  return (
+    node?.type === "TSUnionType" &&
+    Array.isArray(node.types) &&
+    node.types.length >= 2 &&
+    node.types.every(isTaggedTypeLiteral)
+  );
+};
+
+const unsupportedEffectApiMessages = new Map([
+  ["async", "Effect.async is unavailable in Effect v4/effect-smol. Use Effect.callback."],
+  [
+    "zipRight",
+    "Effect.zipRight is unavailable in Effect v4/effect-smol. Use Effect.andThen or Effect.gen.",
+  ],
+  [
+    "timeoutFail",
+    "Effect.timeoutFail is unavailable in Effect v4/effect-smol. Use Effect.timeoutOrElse or Effect.timeoutOption.",
+  ],
+  [
+    "catchIf",
+    "Effect.catchIf is unavailable in Effect v4/effect-smol. Use Effect.catchAll with a predicate branch or catchTag/catchTags for tagged errors.",
+  ],
+]);
+
+const noExplicitAny = defineRule({
+  meta: { type: "problem", docs: { description: "Disallow explicit any." } },
+  createOnce(context) {
+    const report = (node: Ranged) => {
+      context.report({
+        node,
+        message: "Do not use any. Use unknown, generics, or a precise type.",
+      });
+    };
+
+    return { TSAnyKeyword: report };
+  },
+});
+
+const noTypeCasting = defineRule({
+  meta: { type: "problem", docs: { description: "Disallow TypeScript type assertions." } },
+  createOnce(context) {
+    const report = (node: Ranged) => {
+      context.report({
+        node,
+        message:
+          "Do not cast with type assertions. Parse at boundaries or model the type precisely.",
+      });
+    };
+
+    return { TSAsExpression: report, TSTypeAssertion: report };
+  },
+});
+
+const noNonNullAssertion = defineRule({
+  meta: { type: "problem", docs: { description: "Disallow non-null assertions." } },
+  createOnce(context) {
+    return {
+      TSNonNullExpression(node) {
+        context.report({
+          node,
+          message:
+            "Do not use non-null assertions. Represent absence with Option or validate first.",
+        });
+      },
+    };
+  },
+});
+
+const noTsNocheck = defineRule({
+  meta: { type: "problem", docs: { description: "Disallow @ts-nocheck directives." } },
+  createOnce(context) {
+    return {
+      Program(node) {
+        if (!/@ts-nocheck\b/.test(context.sourceCode.text)) return;
+        context.report({
+          node,
+          message: "Do not use @ts-nocheck. Fix the types or narrow the unsafe boundary.",
+        });
+      },
+    };
+  },
+});
+
+const noDisableValidation = defineRule({
+  meta: { type: "problem", docs: { description: "Disallow disableValidation: true." } },
+  createOnce(context) {
+    return {
+      Property(node) {
+        if (propertyName(node.key) === "disableValidation" && literalValue(node.value) === true) {
+          context.report({
+            node,
+            message: "Do not use disableValidation: true. Fix the schema or input.",
+          });
+        }
+      },
+    };
+  },
+});
+
+const noSqlTypeParameter = defineRule({
+  meta: { type: "problem", docs: { description: "Disallow sql<Type>`...`." } },
+  createOnce(context) {
+    return {
+      TaggedTemplateExpression(node) {
+        const template = asNode(node);
+        if (
+          (template?.typeArguments === undefined && template?.typeParameters === undefined) ||
+          !isIdentifier(template.tag, "sql")
+        ) {
+          return;
+        }
+        context.report({
+          node,
+          message:
+            "Do not use sql<Type>`...`. Use Schema-backed SQL decoding for runtime validation.",
+        });
+      },
+    };
+  },
+});
+
+const noUnknownRuntimeRequirements = defineRule({
+  meta: {
+    type: "problem",
+    docs: { description: "Disallow Effect runtime runners accepting unknown requirements." },
+  },
+  createOnce(context) {
+    return {
+      TSTypeReference(node) {
+        if (!isEffectTypeWithUnknownRequirement(node)) return;
+        context.report({
+          node,
+          message:
+            "Do not use unknown as the Effect requirement type. Thread the runtime context type through a generic R.",
+        });
+      },
+    };
+  },
+});
+
+const preferOptionFromNullable = defineRule({
+  meta: { type: "suggestion", docs: { description: "Prefer Option.fromNullable." } },
+  createOnce(context) {
+    return {
+      ConditionalExpression(node) {
+        const target = checkedNullTarget(node.test);
+        if (target === undefined) return;
+
+        if (isOptionSomeCall(node.consequent, target) && isOptionNoneCall(node.alternate)) {
+          context.report({
+            node,
+            message: "Use Option.fromNullable(...) instead of Option.some/none ternary.",
+          });
+        }
+      },
+    };
+  },
+});
+
+const preferInlineContextServiceShape = defineRule({
+  meta: {
+    type: "suggestion",
+    docs: { description: "Prefer inline Context.Service shapes with Option for absence." },
+  },
+  createOnce(context) {
+    const layerFunctions = new Map<string, Node>();
+
+    const checkServiceShape = (serviceShape: Node): void => {
+      if (serviceShape.type !== "TSTypeLiteral") {
+        if (serviceShape.type !== "TSTypeReference") return;
+        context.report({
+          node: serviceShape,
+          message: "Inline the Context.Service shape instead of referencing an interface.",
+        });
+        return;
+      }
+
+      if (!Array.isArray(serviceShape.members)) return;
+      for (const memberValue of serviceShape.members) {
+        const member = asNode(memberValue);
+        if (member?.type !== "TSPropertySignature" || member.optional !== true) continue;
+        context.report({
+          node: member,
+          message: "Use Option for optional Context.Service fields instead of optional properties.",
+        });
+      }
+    };
+
+    const resolveLayer = (value: unknown): Node | undefined => {
+      const node = asNode(value);
+      if (node === undefined) return undefined;
+      if (node.type === "ArrowFunctionExpression" || node.type === "FunctionExpression")
+        return node;
+      const name = identifierName(node);
+      return name === undefined ? undefined : layerFunctions.get(name);
+    };
+
+    return {
+      FunctionDeclaration(node) {
+        const name = identifierName(node.id);
+        if (name !== undefined) layerFunctions.set(name, node);
+      },
+      VariableDeclarator(node) {
+        const name = identifierName(node.id);
+        const init = asNode(node.init);
+        if (
+          name !== undefined &&
+          (init?.type === "ArrowFunctionExpression" || init?.type === "FunctionExpression")
+        ) {
+          layerFunctions.set(name, init);
+        }
+      },
+      ClassDeclaration(node) {
+        const className = identifierName(node.id);
+        if (className === undefined) return;
+
+        const serviceCall = isContextServiceSuperclass(node.superClass);
+        if (serviceCall === undefined) return;
+
+        const serviceSelf = typeParameterAt(serviceCall, 0);
+        if (typeReferenceName(serviceSelf) !== className) {
+          context.report({
+            node: serviceSelf ?? node,
+            message: "Use the service class as the first Context.Service type parameter.",
+          });
+        }
+
+        const tag = contextServiceTag(node.superClass);
+        if (tag !== undefined && !isNamespacedServiceTag(tag, className)) {
+          context.report({
+            node,
+            message: `Use a namespaced Context.Service tag ending with /${className}.`,
+          });
+        }
+
+        const serviceShape = typeParameterAt(serviceCall, 1);
+        if (serviceShape === undefined) return;
+        checkServiceShape(serviceShape);
+        if (serviceShape.type !== "TSTypeLiteral") return;
+
+        const layer = staticLayerInitializer(node);
+        if (layer === undefined) return;
+
+        const layerFunction = resolveLayer(layer);
+        if (layerFunction === undefined) return;
+
+        const parameterName = singleParameterName(layerFunction);
+        if (parameterName === undefined) return;
+
+        const inputName = schemaInputNameFromLayer(layerFunction, className, parameterName);
+        if (inputName === undefined) return;
+
+        if (!hasInputTypeParameter(layerFunction, inputName)) {
+          context.report({
+            node: layerFunction,
+            message: `Type the service layer input as typeof ${inputName}.Type.`,
+          });
+          return;
+        }
+
+        const layerBody = asNode(layerFunction.body);
+        if (hasCallableOrEffectMember(serviceShape)) {
+          if (!isConfigBlockLayer(layerBody, className, inputName, parameterName)) {
+            context.report({
+              node: layerFunction,
+              message: `Build config with ${inputName}.make(input) and return ${className}.of({ ...config, ...methods }).`,
+            });
+          }
+          return;
+        }
+
+        if (!isLayerSucceedInputMake(layerBody, className, inputName, parameterName)) {
+          context.report({
+            node: layerFunction,
+            message: `Pure config services should return Layer.succeed(${className})(${inputName}.make(input)).`,
+          });
+        }
+      },
+      CallExpression(node) {
+        if (!isContextServiceCall(node)) return;
+        const serviceShape = typeParameterAt(node, 1);
+        if (serviceShape === undefined) return;
+        checkServiceShape(serviceShape);
+      },
+    };
+  },
+});
+
+const noEffectIgnore = defineRule({
+  meta: { type: "problem", docs: { description: "Disallow Effect.ignore." } },
+  createOnce(context) {
+    return {
+      MemberExpression(node) {
+        if (isEffectMember(node, "ignore")) {
+          context.report({
+            node,
+            message: "Do not use Effect.ignore. Handle or propagate errors explicitly.",
+          });
+        }
+      },
+    };
+  },
+});
+
+const noEffectCatchAllCause = defineRule({
+  meta: { type: "problem", docs: { description: "Disallow Effect.catchAllCause." } },
+  createOnce(context) {
+    return {
+      MemberExpression(node) {
+        if (isEffectMember(node, "catchAllCause")) {
+          context.report({
+            node,
+            message:
+              "Do not use Effect.catchAllCause for recoverable errors. Catch expected errors only.",
+          });
+        }
+      },
+    };
+  },
+});
+
+const noEffectEscapeHatch = defineRule({
+  meta: { type: "problem", docs: { description: "Disallow Effect die/orDie escape hatches." } },
+  createOnce(context) {
+    return {
+      MemberExpression(node) {
+        const name = propertyName(node.property);
+        if (name === "die" || name === "dieMessage" || name === "orDie" || name === "orDieWith") {
+          if (!isIdentifier(node.object, "Effect")) return;
+          context.report({
+            node,
+            message:
+              "Do not collapse typed failures with Effect die/orDie. Preserve the error channel.",
+          });
+        }
+      },
+    };
+  },
+});
+
+const noUnsupportedEffectApi = defineRule({
+  meta: {
+    type: "problem",
+    docs: { description: "Disallow Effect APIs unavailable in Effect v4/effect-smol." },
+  },
+  createOnce(context) {
+    return {
+      MemberExpression(node) {
+        if (!isIdentifier(node.object, "Effect")) return;
+        const name = propertyName(node.property);
+        if (name === undefined) return;
+        const message = unsupportedEffectApiMessages.get(name);
+        if (message === undefined) return;
+        context.report({ node, message });
+      },
+    };
+  },
+});
+
+const noUnnecessaryEffectTx = defineRule({
+  meta: {
+    type: "suggestion",
+    docs: { description: "Disallow Effect.tx without transactional Effect APIs." },
+  },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        if (!isEffectMember(node.callee, "tx")) return;
+        if (!Array.isArray(node.arguments) || node.arguments.length === 0) return;
+        if (!isInspectableTxArgument(node.arguments[0])) return;
+        if (containsTransactionalApi(node.arguments[0])) return;
+        context.report({
+          node,
+          message:
+            "Use Effect.tx only around transactional Tx* operations, Effect.txRetry, or Effect.Transaction.",
+        });
+      },
+    };
+  },
+});
+
+const noSilentErrorSwallow = defineRule({
+  meta: {
+    type: "problem",
+    docs: { description: "Disallow catch handlers returning Effect.void." },
+  },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        const catchName = propertyName(asNode(node.callee)?.property);
+        if (!isIdentifier(asNode(node.callee)?.object, "Effect")) return;
+
+        if (
+          catchName === "catchAll" &&
+          Array.isArray(node.arguments) &&
+          isVoidReturningFunction(node.arguments[0])
+        ) {
+          const handler = node.arguments[0];
+          if (isRanged(handler)) {
+            context.report({ node: handler, message: "Do not swallow errors with Effect.void." });
+          }
+        }
+
+        if (
+          catchName === "catchTag" &&
+          Array.isArray(node.arguments) &&
+          isVoidReturningFunction(node.arguments[1])
+        ) {
+          const handler = node.arguments[1];
+          if (isRanged(handler)) {
+            context.report({ node: handler, message: "Do not swallow errors with Effect.void." });
+          }
+        }
+
+        if (catchName !== "catchTags" || !Array.isArray(node.arguments)) return;
+        const handlers = asNode(node.arguments[0]);
+        if (handlers?.type !== "ObjectExpression" || !Array.isArray(handlers.properties)) return;
+
+        for (const property of handlers.properties) {
+          const handler = asNode(property)?.value;
+          if (isVoidReturningFunction(handler) && isRanged(handler)) {
+            context.report({ node: handler, message: "Do not swallow errors with Effect.void." });
+          }
+        }
+      },
+    };
+  },
+});
+
+const noServiceOption = defineRule({
+  meta: { type: "problem", docs: { description: "Disallow Effect.serviceOption." } },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        if (isEffectMember(node.callee, "serviceOption")) {
+          context.report({
+            node,
+            message: "Do not use Effect.serviceOption. Require services in context.",
+          });
+        }
+      },
+    };
+  },
+});
+
+const isLayerProvideCall = (value: unknown): boolean => isCallToMember(value, "Layer", "provide");
+
+const noNestedLayerProvide = defineRule({
+  meta: { type: "problem", docs: { description: "Disallow nested Layer.provide." } },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        if (!isLayerProvideCall(node) || !Array.isArray(node.arguments)) return;
+        for (const argument of node.arguments) {
+          if (isLayerProvideCall(argument)) {
+            context.report({
+              node: argument,
+              message: "Avoid nested Layer.provide. Extract it or use Layer.provideMerge.",
+            });
+          }
+        }
+      },
+    };
+  },
+});
+
+const preferStaticEffect = defineRule({
+  meta: {
+    type: "suggestion",
+    docs: { description: "Prefer static Effects over zero-argument Effect thunks." },
+  },
+  createOnce(context) {
+    return {
+      VariableDeclarator(node) {
+        if (!returnsStaticEffectCall(node.init)) return;
+        context.report({
+          node: asNode(node.init) ?? node,
+          message:
+            "Effects are already lazy. Define the Effect directly instead of a zero-arg thunk.",
+        });
+      },
+    };
+  },
+});
+
+const preferStreamFromPubSub = defineRule({
+  meta: {
+    type: "suggestion",
+    docs: { description: "Prefer Stream.fromPubSub over exposed PubSub subscriptions." },
+  },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        if (!isPubSubSubscribeCall(node)) return;
+        context.report({
+          node,
+          message: "Expose PubSub events with Stream.fromPubSub(...) instead of raw subscribe().",
+        });
+      },
+    };
+  },
+});
+
+const preferServiceLogAnnotations = defineRule({
+  meta: {
+    type: "suggestion",
+    docs: { description: "Prefer Effect.annotateLogs on Layer.effect service constructors." },
+  },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        if (!isCallToMember(node, "Layer", "effect") || !Array.isArray(node.arguments)) return;
+        const constructor = node.arguments[1];
+        const directGen = asNode(constructor);
+        const pipedGen = pipedEffectGen(constructor);
+        const reportNode = isEffectGenCall(directGen) ? directGen : pipedGen;
+        if (reportNode === undefined || hasAnnotateLogsPipe(constructor)) return;
+        context.report({
+          node: reportNode,
+          message: "Annotate service constructor logs with .pipe(Effect.annotateLogs(...)).",
+        });
+      },
+    };
+  },
+});
+
+const noVoidExpression = defineRule({
+  meta: { type: "problem", docs: { description: "Disallow void expressions." } },
+  createOnce(context) {
+    return {
+      UnaryExpression(node) {
+        if (node.operator === "void") {
+          context.report({
+            node,
+            message: "Do not use void expressions. Handle or intentionally discard another way.",
+          });
+        }
+      },
+    };
+  },
+});
+
+const noDirectFetch = defineRule({
+  meta: { type: "problem", docs: { description: "Disallow direct fetch." } },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        if (
+          isIdentifier(node.callee, "fetch") ||
+          isMember(node.callee, "window", "fetch") ||
+          isMember(node.callee, "globalThis", "fetch")
+        ) {
+          context.report({
+            node,
+            message: "Do not call fetch directly. Use a typed Effect HTTP/client boundary.",
+          });
+        }
+      },
+    };
+  },
+});
+
+const noJsonParse = defineRule({
+  meta: {
+    type: "problem",
+    docs: { description: "Disallow JSON.parse in domain code." },
+  },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        if (!isMember(node.callee, "JSON", "parse")) return;
+        context.report({
+          node,
+          message: "Parse JSON with Effect Schema, e.g. Schema.parseJson or Schema.fromJsonString.",
+        });
+      },
+    };
+  },
+});
+
+const noSchemaErrorResponseLeak = defineRule({
+  meta: {
+    type: "problem",
+    docs: { description: "Disallow exposing SchemaError details in HTTP JSON responses." },
+  },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        const handler = schemaErrorCatchTagHandler(node);
+        if (handler === undefined || !handlerLeaksSchemaErrorResponse(handler)) return;
+        context.report({
+          node,
+          message:
+            "Do not expose SchemaError details in HTTP responses. Log the cause and return a generic decode error.",
+        });
+      },
+    };
+  },
+});
+
+const noUnknownShapeProbing = defineRule({
+  meta: {
+    type: "problem",
+    docs: { description: "Disallow ad hoc unknown object shape probing." },
+  },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        if (!isMember(node.callee, "Reflect", "get")) return;
+        context.report({
+          node,
+          message: "Do not probe unknown shapes. Decode with Schema or a named typed guard.",
+        });
+      },
+      BinaryExpression(node) {
+        if (node.operator !== "in" || typeof literalValue(node.left) !== "string") return;
+        if (literalValue(node.left) === "_tag") return;
+        context.report({
+          node,
+          message: "Do not probe unknown shapes with string `in` checks. Decode at the boundary.",
+        });
+      },
+    };
+  },
+});
+
+const noLocalStorage = defineRule({
+  meta: { type: "problem", docs: { description: "Disallow localStorage." } },
+  createOnce(context) {
+    return {
+      Identifier(node) {
+        if (node.name === "localStorage") {
+          context.report({ node, message: "Do not use localStorage for auth state or secrets." });
+        }
+      },
+    };
+  },
+});
+
+const noRawIndexedDb = defineRule({
+  meta: { type: "problem", docs: { description: "Disallow raw IndexedDB browser APIs." } },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        const name = expressionName(node.callee);
+        if (name === undefined || !rawIndexedDbCallNames.has(name)) return;
+        context.report({
+          node,
+          message:
+            "Do not use raw IndexedDB APIs. Use @effect/platform-browser IndexedDb with Schema-backed tables.",
+        });
+      },
+      MemberExpression(node) {
+        if (!isRawIndexedDbMember(node)) return;
+        context.report({
+          node,
+          message:
+            "Do not use raw IndexedDB APIs. Use @effect/platform-browser IndexedDb with Schema-backed tables.",
+        });
+      },
+    };
+  },
+});
+
+const noManualLayerBuildInTests = defineRule({
+  meta: { type: "problem", docs: { description: "Disallow Layer.build in tests." } },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        if (isMember(node.callee, "Layer", "build")) {
+          context.report({
+            node,
+            message:
+              "Avoid manual Layer.build in tests. Prefer it.layer(...) or Effect.provide(layer).",
+          });
+        }
+      },
+    };
+  },
+});
+
+const preferEffectVitest = defineRule({
+  meta: { type: "suggestion", docs: { description: "Prefer it.effect for Effect tests." } },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        if (!isIdentifier(node.callee, "test") && !isIdentifier(node.callee, "it")) return;
+        if (!Array.isArray(node.arguments)) return;
+        if (isFunction(node.arguments[1])) {
+          context.report({ node: node.callee, message: "Prefer it.effect(...) for Effect tests." });
+        }
+      },
+    };
+  },
+});
+
+const noVitestImport = defineRule({
+  meta: { type: "problem", docs: { description: "Prefer @effect/vitest over vitest." } },
+  createOnce(context) {
+    return {
+      ImportDeclaration(node) {
+        if (literalValue(node.source) !== "vitest") return;
+        context.report({
+          node: asNode(node.source) ?? node,
+          message: "Import test helpers from @effect/vitest instead of vitest.",
+        });
+      },
+    };
+  },
+});
+
+const preferEffectVitestAssert = defineRule({
+  meta: { type: "suggestion", docs: { description: "Prefer assert from @effect/vitest." } },
+  createOnce(context) {
+    return {
+      ImportDeclaration(node) {
+        if (literalValue(node.source) !== "@effect/vitest" || !Array.isArray(node.specifiers))
+          return;
+        for (const specifier of node.specifiers) {
+          const imported = propertyName(asNode(specifier)?.imported);
+          if (imported === "expect") {
+            context.report({
+              node: specifier,
+              message: "Prefer assert from @effect/vitest over expect.",
+            });
+          }
+        }
+      },
+    };
+  },
+});
+
+const noEffectRunInTests = defineRule({
+  meta: { type: "problem", docs: { description: "Disallow manual Effect runners in tests." } },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        if (!isTestFilename(context.filename)) return;
+        if (!isEffectRunner(node.callee)) return;
+        context.report({
+          node,
+          message: "Use it.effect(...) instead of manually running Effects in tests.",
+        });
+      },
+    };
+  },
+});
+
+const preferYieldableError = defineRule({
+  meta: {
+    type: "suggestion",
+    docs: { description: "Prefer yieldable errors over yield* Effect.fail(new ErrorType())." },
+  },
+  createOnce(context) {
+    return {
+      YieldExpression(node) {
+        const argument = asNode(node.argument);
+        if (!isCallToMember(argument, "Effect", "fail")) return;
+        const args = argument?.arguments;
+        if (!Array.isArray(args)) return;
+        if (isNewExpression(args[0])) {
+          if (isBuiltInErrorNewExpression(args[0])) return;
+          context.report({
+            node,
+            message:
+              "Use yield* new ErrorType(...) instead of yield* Effect.fail(new ErrorType(...)).",
+          });
+        }
+      },
+    };
+  },
+});
+
+const noEffectFailNewError = defineRule({
+  meta: { type: "problem", docs: { description: "Disallow Effect.fail(new Error(...))." } },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        if (!isEffectMember(node.callee, "fail") || !Array.isArray(node.arguments)) return;
+        const failure = asNode(node.arguments[0]);
+        if (failure?.type === "NewExpression" && isIdentifier(failure.callee, "Error")) {
+          context.report({
+            node,
+            message: "Do not fail with generic Error. Use a typed Schema.TaggedErrorClass.",
+          });
+        }
+      },
+    };
+  },
+});
+
+const noBuiltInErrorConstructor = defineRule({
+  meta: { type: "problem", docs: { description: "Disallow built-in Error constructors." } },
+  createOnce(context) {
+    const report = (node: Ranged) => {
+      context.report({
+        node,
+        message: "Do not construct built-in Error objects. Use typed tagged errors.",
+      });
+    };
+
+    return {
+      NewExpression(node) {
+        if (hasParentEffectFailCall(node) || hasParentThrowStatement(node)) return;
+        if (isBuiltInErrorConstructor(node.callee)) report(node);
+      },
+      CallExpression(node) {
+        if (hasParentThrowStatement(node)) return;
+        if (isBuiltInErrorConstructor(node.callee)) report(node);
+      },
+    };
+  },
+});
+
+const noRawThrow = defineRule({
+  meta: { type: "problem", docs: { description: "Disallow throw statements." } },
+  createOnce(context) {
+    return {
+      ThrowStatement(node) {
+        context.report({
+          node,
+          message: "Do not throw from Effect domain code. Return typed Effect failures.",
+        });
+      },
+    };
+  },
+});
+
+const noInstanceofError = defineRule({
+  meta: { type: "problem", docs: { description: "Disallow instanceof Error checks." } },
+  createOnce(context) {
+    return {
+      BinaryExpression(node) {
+        if (node.operator !== "instanceof" || !isIdentifier(node.right, "Error")) return;
+        context.report({
+          node,
+          message:
+            "Do not use instanceof Error. Preserve typed failures with tagged-error handling.",
+        });
+      },
+    };
+  },
+});
+
+const noUnknownErrorMessage = defineRule({
+  meta: {
+    type: "problem",
+    docs: { description: "Disallow common unknown-error message extraction patterns." },
+  },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        if (!isIdentifier(node.callee, "String") || !Array.isArray(node.arguments)) return;
+        if (!node.arguments.some(isErrorLikeIdentifier)) return;
+        context.report({
+          node,
+          message: "Do not stringify unknown errors. Normalize them into typed failures.",
+        });
+      },
+      MemberExpression(node) {
+        if (propertyName(node.property) !== "message" || !isErrorLikeIdentifier(node.object))
+          return;
+        context.report({
+          node,
+          message: "Do not read .message from unknown errors. Preserve typed failures.",
+        });
+      },
+      VariableDeclarator(node) {
+        const id = asNode(node.id);
+        if (id?.type !== "ObjectPattern" || !Array.isArray(id.properties)) return;
+        if (!isErrorLikeIdentifier(node.init)) return;
+        for (const property of id.properties) {
+          const propertyNode = asNode(property);
+          if (propertyNode?.type !== "Property" || propertyName(propertyNode.key) !== "message") {
+            continue;
+          }
+          context.report({
+            node: propertyNode,
+            message: "Do not destructure .message from unknown errors. Preserve typed failures.",
+          });
+        }
+      },
+    };
+  },
+});
+
+const noPromiseCatch = defineRule({
+  meta: { type: "problem", docs: { description: "Disallow Promise-style .catch()." } },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        const callee = asNode(node.callee);
+        if (
+          callee?.type !== "MemberExpression" ||
+          isIdentifier(callee.object, "Effect") ||
+          propertyName(callee.property) !== "catch"
+        ) {
+          return;
+        }
+        context.report({
+          node,
+          message: "Do not use Promise .catch(). Model async failures with Effect.tryPromise.",
+        });
+      },
+    };
+  },
+});
+
+const noPromiseReject = defineRule({
+  meta: { type: "problem", docs: { description: "Disallow Promise rejection APIs." } },
+  createOnce(context) {
+    const promiseExecutors = new WeakSet<Node>();
+    const rejectNames: Array<string | undefined> = [];
+
+    const enterFunction = (value: unknown) => {
+      const node = asNode(value);
+      if (node === undefined || !promiseExecutors.has(node)) return;
+      const rejectParam = node.params?.[1];
+      const rejectNode = asNode(rejectParam);
+      rejectNames.push(
+        rejectNode?.type === "Identifier" && typeof rejectNode.name === "string"
+          ? rejectNode.name
+          : undefined,
+      );
+    };
+
+    const exitFunction = (value: unknown) => {
+      const node = asNode(value);
+      if (node !== undefined && promiseExecutors.has(node)) rejectNames.pop();
+    };
+
+    return {
+      NewExpression(node) {
+        if (!isPromiseConstructor(node) || !Array.isArray(node.arguments)) return;
+        const executor = asNode(node.arguments[0]);
+        if (executor !== undefined && isFunction(executor)) promiseExecutors.add(executor);
+      },
+      CallExpression(node) {
+        if (isPromiseReject(node.callee)) {
+          context.report({
+            node,
+            message:
+              "Do not use Promise.reject(). Model failures with Effect.fail or Effect.tryPromise.",
+          });
+          return;
+        }
+
+        const callee = asNode(node.callee);
+        if (callee?.type !== "Identifier" || typeof callee.name !== "string") return;
+        if (!rejectNames.includes(callee.name)) return;
+        context.report({
+          node,
+          message: "Do not call Promise executor reject(). Model failures with Effect.",
+        });
+      },
+      FunctionDeclaration: enterFunction,
+      "FunctionDeclaration:exit": exitFunction,
+      FunctionExpression: enterFunction,
+      "FunctionExpression:exit": exitFunction,
+      ArrowFunctionExpression: enterFunction,
+      "ArrowFunctionExpression:exit": exitFunction,
+    };
+  },
+});
+
+const preferTaggedConstructor = defineRule({
+  meta: {
+    type: "suggestion",
+    docs: { description: "Prefer tagged constructors over bare _tag objects." },
+  },
+  createOnce(context) {
+    return {
+      ObjectExpression(node) {
+        if (!Array.isArray(node.properties)) return;
+        for (const property of node.properties) {
+          const propertyNode = asNode(property);
+          if (propertyNode?.type !== "Property") continue;
+          if (propertyName(propertyNode.key) !== "_tag") continue;
+          if (typeof literalValue(propertyNode.value) !== "string") continue;
+          context.report({
+            node,
+            message: "Use a tagged constructor instead of constructing _tag objects by hand.",
+          });
+          return;
+        }
+      },
+    };
+  },
+});
+
+const preferDataTaggedEnum = defineRule({
+  meta: {
+    type: "suggestion",
+    docs: { description: "Prefer Data.TaggedEnum over manual _tag union type aliases." },
+  },
+  createOnce(context) {
+    return {
+      TSTypeAliasDeclaration(node) {
+        if (!isTaggedUnionType(node.typeAnnotation)) return;
+        context.report({
+          node,
+          message: "Use Data.TaggedEnum for tagged union types instead of manual _tag unions.",
+        });
+      },
+    };
+  },
+});
+
+const noManualTagCheck = defineRule({
+  meta: { type: "problem", docs: { description: "Disallow manual _tag checks." } },
+  createOnce(context) {
+    return {
+      BinaryExpression(node) {
+        if (node.operator === "in" && isTagProperty(node.left)) {
+          context.report({
+            node,
+            message:
+              "Do not inspect _tag manually. Use catchTag/catchTags, Predicate.isTagged, or public helpers.",
+          });
+          return;
+        }
+        if (!["===", "!==", "==", "!="].includes(String(node.operator))) return;
+        if (!isTagAccess(node.left) && !isTagAccess(node.right)) return;
+        context.report({
+          node,
+          message:
+            "Do not inspect _tag manually. Use catchTag/catchTags, Predicate.isTagged, or public helpers.",
+        });
+      },
+    };
+  },
+});
+
+const isTagAccess = (value: unknown): boolean => {
+  const node = asNode(value);
+  return node?.type === "MemberExpression" && isTagProperty(node.property);
+};
+
+const preferSchemaTaggedErrorClass = defineRule({
+  meta: {
+    type: "problem",
+    docs: { description: "Prefer Schema.TaggedErrorClass over Data.TaggedError." },
+  },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        if (isDataTaggedErrorCall(node)) {
+          context.report({ node, message: "Use Schema.TaggedErrorClass for typed domain errors." });
+        }
+      },
+    };
+  },
+});
+
+const preferEffectFn = defineRule({
+  meta: {
+    type: "suggestion",
+    docs: { description: "Prefer Effect.fn or Effect.fnUntraced for reusable Effect functions." },
+  },
+  createOnce(context) {
+    return {
+      VariableDeclarator(node) {
+        if (returnsEffectGen(node.init)) {
+          context.report({
+            node,
+            message:
+              "Use Effect.fn(...) or Effect.fnUntraced(...) instead of a reusable Effect.gen wrapper.",
+          });
+        }
+      },
+      FunctionDeclaration(node) {
+        if (returnsEffectGen(node)) {
+          context.report({
+            node,
+            message:
+              "Use Effect.fn(...) or Effect.fnUntraced(...) instead of returning Effect.gen(...).",
+          });
+        }
+      },
+    };
+  },
+});
+
+const noEffectFnImmediateInvocation = defineRule({
+  meta: {
+    type: "problem",
+    docs: { description: "Disallow immediate invocation of Effect.fn implementations." },
+  },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        if (!Array.isArray(node.arguments) || node.arguments.length !== 0) return;
+        if (!isEffectFnImplementationCall(node.callee)) return;
+        context.report({
+          node,
+          message:
+            "Do not write Effect.fn(...)(...)(). Put parameters on the generator function instead.",
+        });
+      },
+    };
+  },
+});
+
+const preferMatchValidation = defineRule({
+  meta: {
+    type: "suggestion",
+    docs: {
+      description: "Prefer Match decision tables for validation failure ladders.",
+    },
+  },
+  createOnce(context) {
+    const report = (node: Ranged) => {
+      context.report({
+        node,
+        message:
+          "Prefer Match.type(...).pipe(...) for validation decision tables instead of Effect.fail if ladders.",
+      });
+    };
+
+    return {
+      ArrowFunctionExpression(node) {
+        if (isValidationFailureLadder(node)) report(node);
+      },
+      FunctionExpression(node) {
+        if (isValidationFailureLadder(node)) report(node);
+      },
+    };
+  },
+});
+
+const preferMatchValue = defineRule({
+  meta: {
+    type: "suggestion",
+    docs: { description: "Prefer Match.value over return-only string switch mappings." },
+  },
+  createOnce(context) {
+    return {
+      SwitchStatement(node) {
+        if (!isReturnOnlyStringSwitch(node)) return;
+        context.report({
+          node,
+          message: "Use Match.value(...).pipe(...) instead of return-only string switch mappings.",
+        });
+      },
+    };
+  },
+});
+
+const preferYieldableErrorInMatch = defineRule({
+  meta: {
+    type: "suggestion",
+    docs: { description: "Prefer returning yieldable errors from Match handlers." },
+  },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        if (!isMatchWhenCall(node) || !Array.isArray(node.arguments)) return;
+        const handler = asNode(node.arguments[node.arguments.length - 1]);
+        if (handler === undefined) return;
+        if (!returnsEffectFailNew(handler)) return;
+        context.report({
+          node: handler,
+          message:
+            "Return new DomainError(...) from Match handlers; yield the matcher result in Effect.fn/Effect.gen.",
+        });
+      },
+    };
+  },
+});
+
+const noAsEffectMethodReference = defineRule({
+  meta: {
+    type: "problem",
+    docs: { description: "Disallow passing .asEffect as an unbound method reference." },
+  },
+  createOnce(context) {
+    return {
+      MemberExpression(node) {
+        if (propertyName(node.property) !== "asEffect") return;
+        const parent = asNode(node.parent);
+        if (parent?.type === "CallExpression" && parent.callee === node) return;
+        context.report({
+          node,
+          message:
+            "Do not pass .asEffect as a method reference. Return the yieldable error instead.",
+        });
+      },
+    };
+  },
+});
+
+const preferContextService = defineRule({
+  meta: {
+    type: "suggestion",
+    docs: { description: "Prefer Context.Service over Context.Tag or Context.GenericTag." },
+  },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        if (
+          isMember(node.callee, "Context", "Tag") ||
+          isMember(node.callee, "Context", "GenericTag")
+        ) {
+          context.report({
+            node,
+            message: "Prefer Context.Service class syntax over Context.Tag/GenericTag.",
+          });
+        }
+      },
+    };
+  },
+});
+
+const noInlineSchemaCompile = defineRule({
+  meta: {
+    type: "problem",
+    docs: { description: "Disallow inline Schema compiler calls inside function bodies." },
+  },
+  createOnce(context) {
+    let functionDepth = 0;
+    return {
+      before() {
+        functionDepth = 0;
+      },
+      FunctionDeclaration() {
+        functionDepth++;
+      },
+      "FunctionDeclaration:exit"() {
+        functionDepth--;
+      },
+      FunctionExpression() {
+        functionDepth++;
+      },
+      "FunctionExpression:exit"() {
+        functionDepth--;
+      },
+      ArrowFunctionExpression() {
+        functionDepth++;
+      },
+      "ArrowFunctionExpression:exit"() {
+        functionDepth--;
+      },
+      CallExpression(node) {
+        if (functionDepth === 0) return;
+        const outer = asNode(node.parent);
+        if (outer?.type !== "CallExpression" || outer.callee !== node) return;
+        const method = schemaCompilerMethod(node.callee);
+        if (method === undefined) return;
+        context.report({
+          node: node.callee,
+          message: `Hoist Schema.${method}(...) to module scope.`,
+        });
+      },
+    };
+  },
+});
+
+const noTryCatch = defineRule({
+  meta: {
+    type: "problem",
+    docs: { description: "Disallow try/catch. Use Effect error constructors instead." },
+  },
+  createOnce(context) {
+    return {
+      TryStatement(node) {
+        context.report({
+          node,
+          message:
+            "Avoid try/catch. Use Effect.try, Effect.tryPromise, Effect.catch*, or typed failures.",
+        });
+      },
+    };
+  },
+});
+
+const preferSharedManagedRuntime = defineRule({
+  meta: {
+    type: "suggestion",
+    docs: { description: "Prefer shared ManagedRuntime for layer-provided JS boundaries." },
+  },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        const provided = effectRunnerInlineProvidedArgument(node);
+        if (provided === undefined) return;
+        context.report({
+          node: provided,
+          message:
+            "Do not provide layers inside Effect runners. Use a shared ManagedRuntime at the JS boundary.",
+        });
+      },
+    };
+  },
+});
+
+const requireCallbackCleanupForListeners = defineRule({
+  meta: {
+    type: "problem",
+    docs: { description: "Require Effect.callback cleanup when registering listeners." },
+  },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        const callback = effectCallbackNeedingCleanup(node);
+        if (callback === undefined) return;
+        context.report({
+          node: callback,
+          message:
+            "Return a cleanup Effect from Effect.callback when registering listeners or resources.",
+        });
+      },
+    };
+  },
+});
+
+const preferScopedTempCleanup = defineRule({
+  meta: {
+    type: "suggestion",
+    docs: { description: "Prefer scoped temporary resources over manual cleanup." },
+  },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        if (!isUnscopedTempResourceCall(node)) return;
+        const body = enclosingFunctionBody(node);
+        if (body === undefined || !containsCallProperty(body, tempCleanupMethods)) return;
+        const method = propertyName(asNode(node.callee)?.property);
+        context.report({
+          node,
+          message: `Use ${method}Scoped with Effect.scoped instead of manual temp cleanup.`,
+        });
+      },
+    };
+  },
+});
+
+const noNestedSemaphoreAcquire = defineRule({
+  meta: {
+    type: "problem",
+    docs: { description: "Disallow acquiring semaphores while holding another semaphore." },
+  },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        const effect = semaphoreAcquireEffectArgument(node);
+        if (effect === undefined || !containsNestedSemaphoreAcquire(effect)) return;
+        context.report({
+          node,
+          message:
+            "Do not acquire a semaphore while holding another semaphore. Use TxRef/TxQueue with Effect.tx for coordinated state.",
+        });
+      },
+    };
+  },
+});
+
+const typeSafetyRules = {
+  "no-explicit-any": noExplicitAny,
+  "no-type-casting": noTypeCasting,
+  "no-non-null-assertion": noNonNullAssertion,
+  "no-ts-nocheck": noTsNocheck,
+  "no-disable-validation": noDisableValidation,
+  "no-sql-type-parameter": noSqlTypeParameter,
+  "no-unknown-runtime-requirements": noUnknownRuntimeRequirements,
+  "prefer-option-from-nullable": preferOptionFromNullable,
+} as const;
+
+const effectArchitectureRules = {
+  "prefer-inline-context-service-shape": preferInlineContextServiceShape,
+  "no-unnecessary-effect-tx": noUnnecessaryEffectTx,
+  "no-service-option": noServiceOption,
+  "no-nested-layer-provide": noNestedLayerProvide,
+  "prefer-static-effect": preferStaticEffect,
+  "prefer-stream-from-pubsub": preferStreamFromPubSub,
+  "prefer-service-log-annotations": preferServiceLogAnnotations,
+  "no-direct-fetch": noDirectFetch,
+  "no-localstorage": noLocalStorage,
+  "no-raw-indexeddb": noRawIndexedDb,
+  "prefer-context-service": preferContextService,
+  "no-inline-schema-compile": noInlineSchemaCompile,
+  "prefer-shared-managed-runtime": preferSharedManagedRuntime,
+  "require-callback-cleanup-for-listeners": requireCallbackCleanupForListeners,
+  "prefer-scoped-temp-cleanup": preferScopedTempCleanup,
+  "no-nested-semaphore-acquire": noNestedSemaphoreAcquire,
+} as const;
+
+const effectTestRules = {
+  "no-manual-layer-build-in-tests": noManualLayerBuildInTests,
+  "no-effect-run-in-tests": noEffectRunInTests,
+  "no-vitest-import": noVitestImport,
+  "prefer-effect-vitest": preferEffectVitest,
+  "prefer-effect-vitest-assert": preferEffectVitestAssert,
+} as const;
+
+const effectErrorRules = {
+  "no-effect-ignore": noEffectIgnore,
+  "no-effect-catchallcause": noEffectCatchAllCause,
+  "no-effect-escape-hatch": noEffectEscapeHatch,
+  "no-silent-error-swallow": noSilentErrorSwallow,
+  "prefer-yieldable-error": preferYieldableError,
+  "no-effect-fail-new-error": noEffectFailNewError,
+  "no-built-in-error-constructor": noBuiltInErrorConstructor,
+  "no-raw-throw": noRawThrow,
+  "no-instanceof-error": noInstanceofError,
+  "no-unknown-error-message": noUnknownErrorMessage,
+  "no-promise-catch": noPromiseCatch,
+  "no-promise-reject": noPromiseReject,
+  "prefer-schema-tagged-error-class": preferSchemaTaggedErrorClass,
+  "prefer-yieldable-error-in-match": preferYieldableErrorInMatch,
+  "no-try-catch": noTryCatch,
+} as const;
+
+const dataModelingRules = {
+  "no-void-expression": noVoidExpression,
+  "no-json-parse": noJsonParse,
+  "no-schema-error-response-leak": noSchemaErrorResponseLeak,
+  "no-unknown-shape-probing": noUnknownShapeProbing,
+  "prefer-tagged-constructor": preferTaggedConstructor,
+  "prefer-data-tagged-enum": preferDataTaggedEnum,
+  "no-manual-tag-check": noManualTagCheck,
+  "prefer-match-validation": preferMatchValidation,
+  "prefer-match-value": preferMatchValue,
+} as const;
+
+const effectFunctionRules = {
+  "no-unsupported-effect-api": noUnsupportedEffectApi,
+  "prefer-effect-fn": preferEffectFn,
+  "no-effect-fn-immediate-invocation": noEffectFnImmediateInvocation,
+  "no-as-effect-method-reference": noAsEffectMethodReference,
+} as const;
+
+export const rules = {
+  ...typeSafetyRules,
+  ...effectErrorRules,
+  ...effectArchitectureRules,
+  ...dataModelingRules,
+  ...effectFunctionRules,
+  ...effectTestRules,
+} as const;
