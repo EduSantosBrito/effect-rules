@@ -10,6 +10,7 @@ type Node = Ranged & {
   readonly callee?: unknown;
   readonly arguments?: ReadonlyArray<unknown>;
   readonly key?: unknown;
+  readonly optional?: unknown;
   readonly source?: unknown;
   readonly specifiers?: ReadonlyArray<unknown>;
   readonly left?: unknown;
@@ -31,6 +32,18 @@ type Node = Ranged & {
   readonly tag?: unknown;
   readonly imported?: unknown;
   readonly params?: ReadonlyArray<unknown>;
+  readonly delegate?: unknown;
+  readonly types?: ReadonlyArray<unknown>;
+  readonly literal?: unknown;
+  readonly members?: ReadonlyArray<unknown>;
+  readonly declarations?: ReadonlyArray<unknown>;
+  readonly cases?: ReadonlyArray<unknown>;
+  readonly discriminant?: unknown;
+  readonly superClass?: unknown;
+  readonly static?: unknown;
+  readonly returnType?: unknown;
+  readonly typeName?: unknown;
+  readonly exprName?: unknown;
 };
 
 const isRanged = (value: unknown): value is Ranged =>
@@ -49,6 +62,11 @@ const isIdentifier = (value: unknown, name?: string): boolean => {
     typeof node.name === "string" &&
     (name === undefined || node.name === name)
   );
+};
+
+const identifierName = (value: unknown): string | undefined => {
+  const node = asNode(value);
+  return node?.type === "Identifier" && typeof node.name === "string" ? node.name : undefined;
 };
 
 const propertyName = (value: unknown): string | undefined => {
@@ -75,6 +93,21 @@ const isEffectMember = (value: unknown, memberName: string): boolean =>
 
 const isEffectVoid = (value: unknown): boolean =>
   isEffectMember(value, "void") || isEffectMember(value, "unit");
+
+const isEffectRunner = (value: unknown): boolean => {
+  const method = propertyName(asNode(value)?.property);
+  if (
+    method !== "runPromise" &&
+    method !== "runPromiseExit" &&
+    method !== "runSync" &&
+    method !== "runSyncExit"
+  ) {
+    return false;
+  }
+
+  const node = asNode(value);
+  return node?.type === "MemberExpression";
+};
 
 const isCallToMember = (value: unknown, objectName: string, memberName: string): boolean => {
   const node = asNode(value);
@@ -146,7 +179,246 @@ const isOptionNoneCall = (value: unknown): boolean => {
   return node?.type === "CallExpression" && isMember(node.callee, "Option", "none");
 };
 
+const typeParameterAt = (value: unknown, index: number): Node | undefined => {
+  const node = asNode(value);
+  const typeParameters = asNode(node?.typeParameters) ?? asNode(node?.typeArguments);
+  if (typeParameters === undefined || !Array.isArray(typeParameters.params)) return undefined;
+  return asNode(typeParameters.params[index]);
+};
+
+const typeReferenceName = (value: unknown): string | undefined => {
+  const node = asNode(value);
+  if (node?.type !== "TSTypeReference") return undefined;
+  return typeQueryName(node.typeName);
+};
+
+const typeQueryName = (value: unknown): string | undefined => {
+  const node = asNode(value);
+  if (node === undefined) return undefined;
+  if (node.type === "Identifier" && typeof node.name === "string") return node.name;
+  if (node.type === "TSQualifiedName") {
+    const left = typeQueryName(node.left);
+    const right = typeQueryName(node.right);
+    if (left === undefined || right === undefined) return undefined;
+    return `${left}.${right}`;
+  }
+  return undefined;
+};
+
+const isTypeofInputType = (value: unknown, inputName: string): boolean => {
+  const node = asNode(value);
+  if (node?.type !== "TSTypeQuery") return false;
+  return typeQueryName(node.exprName) === `${inputName}.Type`;
+};
+
+const typeAnnotation = (value: unknown): Node | undefined => {
+  const annotation = asNode(asNode(value)?.typeAnnotation);
+  return annotation?.type === "TSTypeAnnotation" ? asNode(annotation.typeAnnotation) : undefined;
+};
+
+const hasCallableOrEffectMember = (serviceShape: Node): boolean => {
+  if (!Array.isArray(serviceShape.members)) return false;
+  return serviceShape.members.some((memberValue) => {
+    const member = asNode(memberValue);
+    if (member?.type !== "TSPropertySignature") return false;
+    const annotation = typeAnnotation(member);
+    if (annotation?.type === "TSFunctionType") return true;
+    return typeReferenceName(annotation) === "Effect.Effect";
+  });
+};
+
+const expressionName = (value: unknown): string | undefined => {
+  const node = asNode(value);
+  if (node === undefined) return undefined;
+  if (node.type === "Identifier" && typeof node.name === "string") return node.name;
+  if (node.type !== "MemberExpression") return undefined;
+  const objectName = expressionName(node.object);
+  const memberName = propertyName(node.property);
+  if (objectName === undefined || memberName === undefined) return undefined;
+  return `${objectName}.${memberName}`;
+};
+
+const isInputMakeCall = (value: unknown, inputName: string, parameterName: string): boolean => {
+  const node = asNode(value);
+  return (
+    node?.type === "CallExpression" &&
+    expressionName(node.callee) === `${inputName}.make` &&
+    Array.isArray(node.arguments) &&
+    node.arguments.length === 1 &&
+    isIdentifier(node.arguments[0], parameterName)
+  );
+};
+
+const isLayerSucceedInputMake = (
+  value: unknown,
+  serviceName: string,
+  inputName: string,
+  parameterName: string,
+): boolean => {
+  const outer = asNode(value);
+  const inner = asNode(outer?.callee);
+  return (
+    outer?.type === "CallExpression" &&
+    Array.isArray(outer.arguments) &&
+    outer.arguments.length === 1 &&
+    isInputMakeCall(outer.arguments[0], inputName, parameterName) &&
+    inner?.type === "CallExpression" &&
+    isMember(inner.callee, "Layer", "succeed") &&
+    Array.isArray(inner.arguments) &&
+    inner.arguments.length === 1 &&
+    isIdentifier(inner.arguments[0], serviceName)
+  );
+};
+
+const isConfigDeclaration = (value: unknown, inputName: string, parameterName: string): boolean => {
+  const node = asNode(value);
+  const declaration = asNode(node?.declaration);
+  if (node?.type !== "VariableDeclaration" || declaration !== undefined) return false;
+  if (!Array.isArray(node.declarations) || node.declarations.length !== 1) return false;
+  const declarator = asNode(node.declarations[0]);
+  return (
+    declarator?.type === "VariableDeclarator" &&
+    isIdentifier(declarator.id, "config") &&
+    isInputMakeCall(declarator.init, inputName, parameterName)
+  );
+};
+
+const objectHasConfigSpread = (value: unknown): boolean => {
+  const node = asNode(value);
+  return (
+    node?.type === "ObjectExpression" &&
+    Array.isArray(node.properties) &&
+    node.properties.some((property) => {
+      const propertyNode = asNode(property);
+      return propertyNode?.type === "SpreadElement" && isIdentifier(propertyNode.argument, "config");
+    })
+  );
+};
+
+const isServiceOfConfigObject = (value: unknown, serviceName: string): boolean => {
+  const node = asNode(value);
+  return (
+    node?.type === "CallExpression" &&
+    expressionName(node.callee) === `${serviceName}.of` &&
+    Array.isArray(node.arguments) &&
+    node.arguments.length === 1 &&
+    objectHasConfigSpread(node.arguments[0])
+  );
+};
+
+const isConfigBlockLayer = (
+  value: unknown,
+  serviceName: string,
+  inputName: string,
+  parameterName: string,
+): boolean => {
+  const node = asNode(value);
+  if (node?.type !== "BlockStatement" || !Array.isArray(node.body)) return false;
+  if (!node.body.some((statement) => isConfigDeclaration(statement, inputName, parameterName))) {
+    return false;
+  }
+  return node.body.some((statementValue) => {
+    const statement = asNode(statementValue);
+    return (
+      statement?.type === "ReturnStatement" && isServiceOfConfigObject(statement.argument, serviceName)
+    );
+  });
+};
+
+const isContextServiceSuperclass = (value: unknown): Node | undefined => {
+  const outer = asNode(value);
+  const serviceCall = asNode(outer?.callee);
+  if (outer?.type !== "CallExpression" || serviceCall?.type !== "CallExpression") return undefined;
+  return isContextServiceCall(serviceCall) ? serviceCall : undefined;
+};
+
+const isContextServiceCall = (value: unknown): boolean => {
+  const node = asNode(value);
+  return node?.type === "CallExpression" && isMember(node.callee, "Context", "Service");
+};
+
+const contextServiceTag = (value: unknown): string | undefined => {
+  const outer = asNode(value);
+  if (outer?.type !== "CallExpression" || !Array.isArray(outer.arguments)) return undefined;
+  const tag = literalValue(outer.arguments[0]);
+  return typeof tag === "string" ? tag : undefined;
+};
+
+const staticLayerInitializer = (classDeclaration: Node): Node | undefined => {
+  const body = asNode(classDeclaration.body);
+  if (body?.type !== "ClassBody" || !Array.isArray(body.body)) return undefined;
+
+  for (const memberValue of body.body) {
+    const member = asNode(memberValue);
+    if (member?.static !== true || propertyName(member.key) !== "layer") continue;
+    if (member.value !== undefined) return asNode(member.value);
+  }
+  return undefined;
+};
+
+const singleParameterName = (value: unknown): string | undefined => {
+  const node = asNode(value);
+  if (
+    (node?.type !== "ArrowFunctionExpression" && node?.type !== "FunctionExpression") ||
+    !Array.isArray(node.params) ||
+    node.params.length !== 1
+  ) {
+    return undefined;
+  }
+  return identifierName(node.params[0]);
+};
+
+const hasInputTypeParameter = (value: unknown, inputName: string): boolean => {
+  const node = asNode(value);
+  if (
+    (node?.type !== "ArrowFunctionExpression" && node?.type !== "FunctionExpression") ||
+    !Array.isArray(node.params) ||
+    node.params.length !== 1
+  ) {
+    return false;
+  }
+  return isTypeofInputType(typeAnnotation(node.params[0]), inputName);
+};
+
 const isEffectGenCall = (value: unknown): boolean => isCallToMember(value, "Effect", "gen");
+
+const isTransactionalApi = (value: unknown): boolean => {
+  const node = asNode(value);
+  if (node?.type !== "MemberExpression") return false;
+  if (isIdentifier(node.object, "Effect")) {
+    const name = propertyName(node.property);
+    return name === "txRetry" || name === "Transaction";
+  }
+  const object = asNode(node.object);
+  return (
+    object?.type === "Identifier" && typeof object.name === "string" && /^Tx[A-Z]/.test(object.name)
+  );
+};
+
+const containsTransactionalApi = (value: unknown, seen = new Set<unknown>()): boolean => {
+  if (typeof value !== "object" || value === null || seen.has(value)) return false;
+  seen.add(value);
+
+  const node = asNode(value);
+  if (node !== undefined && isTransactionalApi(node)) return true;
+
+  for (const [key, child] of Object.entries(value)) {
+    if (key === "parent" || key === "range") continue;
+    if (Array.isArray(child)) {
+      if (child.some((item) => containsTransactionalApi(item, seen))) return true;
+      continue;
+    }
+    if (containsTransactionalApi(child, seen)) return true;
+  }
+  return false;
+};
+
+const isInspectableTxArgument = (value: unknown): boolean => {
+  const node = asNode(value);
+  if (node?.type !== "CallExpression") return false;
+  if (isEffectGenCall(node)) return true;
+  return isIdentifier(asNode(node.callee)?.object, "Effect");
+};
 
 const isEffectFailNewExpression = (value: unknown): boolean => {
   const node = asNode(value);
@@ -198,6 +470,30 @@ const returnsEffectFailNew = (value: unknown): boolean => {
   const body = asNode(node.body);
   if (body?.type !== "BlockStatement" || !Array.isArray(body.body)) return false;
   return body.body.some(isReturnEffectFailNewStatement);
+};
+
+const isYieldableErrorExpression = (value: unknown): boolean => {
+  const node = asNode(value);
+  if (node?.type === "Identifier") return true;
+  return node?.type === "NewExpression" && !isBuiltInErrorNewExpression(node);
+};
+
+const isDelegatedYieldOfYieldableError = (value: unknown): boolean => {
+  const node = asNode(value);
+  return node?.type === "YieldExpression" && node.delegate === true && isYieldableErrorExpression(node.argument);
+};
+
+const isEffectFnCall = (value: unknown): boolean => {
+  const node = asNode(value);
+  return (
+    node?.type === "CallExpression" &&
+    (isEffectMember(node.callee, "fn") || isEffectMember(node.callee, "fnUntraced"))
+  );
+};
+
+const isEffectFnImplementationCall = (value: unknown): boolean => {
+  const node = asNode(value);
+  return node?.type === "CallExpression" && isEffectFnCall(node.callee);
 };
 
 const ifConsequentReturnsEffectFailNew = (value: unknown): boolean => {
@@ -313,6 +609,63 @@ const isErrorLikeIdentifier = (value: unknown): boolean => {
 
 const isTagProperty = (value: unknown): boolean => propertyName(value) === "_tag";
 
+const isStringLiteralType = (value: unknown): boolean => {
+  const node = asNode(value);
+  return node?.type === "TSLiteralType" && typeof literalValue(node.literal) === "string";
+};
+
+const isTagPropertySignature = (value: unknown): boolean => {
+  const node = asNode(value);
+  if (node?.type !== "TSPropertySignature" || !isTagProperty(node.key)) return false;
+  const annotation = asNode(node.typeAnnotation);
+  return annotation?.type === "TSTypeAnnotation" && isStringLiteralType(annotation.typeAnnotation);
+};
+
+const isTaggedTypeLiteral = (value: unknown): boolean => {
+  const node = asNode(value);
+  return (
+    node?.type === "TSTypeLiteral" &&
+    Array.isArray(node.members) &&
+    node.members.some(isTagPropertySignature)
+  );
+};
+
+const isStringCase = (value: unknown): boolean => {
+  const node = asNode(value);
+  return node?.type === "SwitchCase" && typeof literalValue(node.test) === "string";
+};
+
+const isReturnStatement = (value: unknown): boolean => asNode(value)?.type === "ReturnStatement";
+
+const isReturnOnlyStringSwitch = (value: unknown): boolean => {
+  const node = asNode(value);
+  return (
+    node?.type === "SwitchStatement" &&
+    Array.isArray(node.cases) &&
+    node.cases.length >= 2 &&
+    node.cases.every((caseValue) => {
+      const switchCase = asNode(caseValue);
+      if (switchCase === undefined) return false;
+      return (
+        isStringCase(switchCase) &&
+        Array.isArray(switchCase.consequent) &&
+        switchCase.consequent.length === 1 &&
+        switchCase.consequent.every(isReturnStatement)
+      );
+    })
+  );
+};
+
+const isTaggedUnionType = (value: unknown): boolean => {
+  const node = asNode(value);
+  return (
+    node?.type === "TSUnionType" &&
+    Array.isArray(node.types) &&
+    node.types.length >= 2 &&
+    node.types.every(isTaggedTypeLiteral)
+  );
+};
+
 const unsupportedEffectApiMessages = new Map([
   ["async", "Effect.async is unavailable in Effect v4/effect-smol. Use Effect.callback."],
   [
@@ -322,6 +675,10 @@ const unsupportedEffectApiMessages = new Map([
   [
     "timeoutFail",
     "Effect.timeoutFail is unavailable in Effect v4/effect-smol. Use Effect.timeoutOrElse or Effect.timeoutOption.",
+  ],
+  [
+    "catchIf",
+    "Effect.catchIf is unavailable in Effect v4/effect-smol. Use Effect.catchAll with a predicate branch or catchTag/catchTags for tagged errors.",
   ],
 ]);
 
@@ -441,6 +798,103 @@ const preferOptionFromNullable = defineRule({
   },
 });
 
+const preferInlineContextServiceShape = defineRule({
+  meta: {
+    type: "suggestion",
+    docs: { description: "Prefer inline Context.Service shapes with Option for absence." },
+  },
+  createOnce(context) {
+    const checkServiceShape = (serviceShape: Node): void => {
+      if (serviceShape.type !== "TSTypeLiteral") {
+        if (serviceShape.type !== "TSTypeReference") return;
+        context.report({
+          node: serviceShape,
+          message: "Inline the Context.Service shape instead of referencing an interface.",
+        });
+        return;
+      }
+
+      if (!Array.isArray(serviceShape.members)) return;
+      for (const memberValue of serviceShape.members) {
+        const member = asNode(memberValue);
+        if (member?.type !== "TSPropertySignature" || member.optional !== true) continue;
+        context.report({
+          node: member,
+          message: "Use Option for optional Context.Service fields instead of optional properties.",
+        });
+      }
+    };
+
+    return {
+      ClassDeclaration(node) {
+        const className = identifierName(node.id);
+        if (className === undefined) return;
+
+        const serviceCall = isContextServiceSuperclass(node.superClass);
+        if (serviceCall === undefined) return;
+
+        const serviceSelf = typeParameterAt(serviceCall, 0);
+        if (typeReferenceName(serviceSelf) !== className) {
+          context.report({
+            node: serviceSelf ?? node,
+            message: "Use the service class as the first Context.Service type parameter.",
+          });
+        }
+
+        const tag = contextServiceTag(node.superClass);
+        if (tag !== undefined && tag !== className) {
+          context.report({
+            node,
+            message: "Use the service class name as the Context.Service tag.",
+          });
+        }
+
+        const serviceShape = typeParameterAt(serviceCall, 1);
+        if (serviceShape === undefined) return;
+        checkServiceShape(serviceShape);
+        if (serviceShape.type !== "TSTypeLiteral") return;
+
+        const layer = staticLayerInitializer(node);
+        if (layer === undefined) return;
+
+        const inputName = `${className}Input`;
+        const parameterName = singleParameterName(layer);
+        if (parameterName === undefined || !hasInputTypeParameter(layer, inputName)) {
+          context.report({
+            node: layer,
+            message: `Type the service layer input as typeof ${inputName}.Type.`,
+          });
+          return;
+        }
+
+        const layerBody = asNode(layer.body);
+        if (hasCallableOrEffectMember(serviceShape)) {
+          if (!isConfigBlockLayer(layerBody, className, inputName, parameterName)) {
+            context.report({
+              node: layer,
+              message: `Build config with ${inputName}.make(input) and return ${className}.of({ ...config, ...methods }).`,
+            });
+          }
+          return;
+        }
+
+        if (!isLayerSucceedInputMake(layerBody, className, inputName, parameterName)) {
+          context.report({
+            node: layer,
+            message: `Pure config services should return Layer.succeed(${className})(${inputName}.make(input)).`,
+          });
+        }
+      },
+      CallExpression(node) {
+        if (!isContextServiceCall(node)) return;
+        const serviceShape = typeParameterAt(node, 1);
+        if (serviceShape === undefined) return;
+        checkServiceShape(serviceShape);
+      },
+    };
+  },
+});
+
 const noEffectIgnore = defineRule({
   meta: { type: "problem", docs: { description: "Disallow Effect.ignore." } },
   createOnce(context) {
@@ -507,6 +961,28 @@ const noUnsupportedEffectApi = defineRule({
         const message = unsupportedEffectApiMessages.get(name);
         if (message === undefined) return;
         context.report({ node, message });
+      },
+    };
+  },
+});
+
+const noUnnecessaryEffectTx = defineRule({
+  meta: {
+    type: "suggestion",
+    docs: { description: "Disallow Effect.tx without transactional Effect APIs." },
+  },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        if (!isEffectMember(node.callee, "tx")) return;
+        if (!Array.isArray(node.arguments) || node.arguments.length === 0) return;
+        if (!isInspectableTxArgument(node.arguments[0])) return;
+        if (containsTransactionalApi(node.arguments[0])) return;
+        context.report({
+          node,
+          message:
+            "Use Effect.tx only around transactional Tx* operations, Effect.txRetry, or Effect.Transaction.",
+        });
       },
     };
   },
@@ -758,6 +1234,21 @@ const preferEffectVitestAssert = defineRule({
   },
 });
 
+const noEffectRunInTests = defineRule({
+  meta: { type: "problem", docs: { description: "Disallow manual Effect runners in tests." } },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        if (!isEffectRunner(node.callee)) return;
+        context.report({
+          node,
+          message: "Use it.effect(...) instead of manually running Effects in tests.",
+        });
+      },
+    };
+  },
+});
+
 const preferYieldableError = defineRule({
   meta: {
     type: "suggestion",
@@ -1000,6 +1491,24 @@ const preferTaggedConstructor = defineRule({
   },
 });
 
+const preferDataTaggedEnum = defineRule({
+  meta: {
+    type: "suggestion",
+    docs: { description: "Prefer Data.TaggedEnum over manual _tag union type aliases." },
+  },
+  createOnce(context) {
+    return {
+      TSTypeAliasDeclaration(node) {
+        if (!isTaggedUnionType(node.typeAnnotation)) return;
+        context.report({
+          node,
+          message: "Use Data.TaggedEnum for tagged union types instead of manual _tag unions.",
+        });
+      },
+    };
+  },
+});
+
 const noManualTagCheck = defineRule({
   meta: { type: "problem", docs: { description: "Disallow manual _tag checks." } },
   createOnce(context) {
@@ -1075,6 +1584,45 @@ const preferEffectFn = defineRule({
   },
 });
 
+const noReturnYieldableError = defineRule({
+  meta: {
+    type: "problem",
+    docs: { description: "Disallow returning yieldable errors from generators." },
+  },
+  createOnce(context) {
+    return {
+      ReturnStatement(node) {
+        if (!isDelegatedYieldOfYieldableError(node.argument)) return;
+        context.report({
+          node,
+          message:
+            "Do not return yieldable errors. Use `yield* error` so the generator returns void, not undefined.",
+        });
+      },
+    };
+  },
+});
+
+const noEffectFnImmediateInvocation = defineRule({
+  meta: {
+    type: "problem",
+    docs: { description: "Disallow immediate invocation of Effect.fn implementations." },
+  },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        if (!Array.isArray(node.arguments) || node.arguments.length !== 0) return;
+        if (!isEffectFnImplementationCall(node.callee)) return;
+        context.report({
+          node,
+          message:
+            "Do not write Effect.fn(...)(...)(). Put parameters on the generator function instead.",
+        });
+      },
+    };
+  },
+});
+
 const preferMatchValidation = defineRule({
   meta: {
     type: "suggestion",
@@ -1097,6 +1645,24 @@ const preferMatchValidation = defineRule({
       },
       FunctionExpression(node) {
         if (isValidationFailureLadder(node)) report(node);
+      },
+    };
+  },
+});
+
+const preferMatchValue = defineRule({
+  meta: {
+    type: "suggestion",
+    docs: { description: "Prefer Match.value over return-only string switch mappings." },
+  },
+  createOnce(context) {
+    return {
+      SwitchStatement(node) {
+        if (!isReturnOnlyStringSwitch(node)) return;
+        context.report({
+          node,
+          message: "Use Match.value(...).pipe(...) instead of return-only string switch mappings.",
+        });
       },
     };
   },
@@ -1239,10 +1805,12 @@ export default definePlugin({
     "no-disable-validation": noDisableValidation,
     "no-sql-type-parameter": noSqlTypeParameter,
     "prefer-option-from-nullable": preferOptionFromNullable,
+    "prefer-inline-context-service-shape": preferInlineContextServiceShape,
     "no-effect-ignore": noEffectIgnore,
     "no-effect-catchallcause": noEffectCatchAllCause,
     "no-effect-escape-hatch": noEffectEscapeHatch,
     "no-unsupported-effect-api": noUnsupportedEffectApi,
+    "no-unnecessary-effect-tx": noUnnecessaryEffectTx,
     "no-silent-error-swallow": noSilentErrorSwallow,
     "no-service-option": noServiceOption,
     "no-nested-layer-provide": noNestedLayerProvide,
@@ -1252,6 +1820,7 @@ export default definePlugin({
     "no-unknown-shape-probing": noUnknownShapeProbing,
     "no-localstorage": noLocalStorage,
     "no-manual-layer-build-in-tests": noManualLayerBuildInTests,
+    "no-effect-run-in-tests": noEffectRunInTests,
     "no-vitest-import": noVitestImport,
     "prefer-effect-vitest": preferEffectVitest,
     "prefer-effect-vitest-assert": preferEffectVitestAssert,
@@ -1264,10 +1833,14 @@ export default definePlugin({
     "no-promise-catch": noPromiseCatch,
     "no-promise-reject": noPromiseReject,
     "prefer-tagged-constructor": preferTaggedConstructor,
+    "prefer-data-tagged-enum": preferDataTaggedEnum,
     "no-manual-tag-check": noManualTagCheck,
     "prefer-schema-tagged-error-class": preferSchemaTaggedErrorClass,
     "prefer-effect-fn": preferEffectFn,
+    "no-return-yieldable-error": noReturnYieldableError,
+    "no-effect-fn-immediate-invocation": noEffectFnImmediateInvocation,
     "prefer-match-validation": preferMatchValidation,
+    "prefer-match-value": preferMatchValue,
     "prefer-yieldable-error-in-match": preferYieldableErrorInMatch,
     "no-as-effect-method-reference": noAsEffectMethodReference,
     "prefer-context-service": preferContextService,

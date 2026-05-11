@@ -17,19 +17,23 @@
   },
   "scripts": {
     "build": "bun --bun tsc --outDir dist --declaration",
-    "check": "bun --bun tsc --noEmit && bun run lint",
-    "format": "bun --bun oxfmt --write package.json tsconfig.json .oxlintrc.json README.md src",
-    "format:check": "bun --bun oxfmt --check package.json tsconfig.json .oxlintrc.json README.md src",
+    "check": "bun --bun tsc --noEmit && bun --bun tsc -p tsconfig.test.json && bun run lint",
+    "format": "bun --bun oxfmt --write .",
+    "format:check": "bun --bun oxfmt --check .",
     "lint": "bun --bun oxlint -c .oxlintrc.json .",
+    "test": "bun --bun vitest run",
     "prepack": "bun run build"
   },
   "dependencies": {
     "@oxlint/plugins": "^1.63.0"
   },
   "devDependencies": {
+    "@effect/vitest": "4.0.0-beta.65",
     "@types/bun": "latest",
+    "effect": "4.0.0-beta.65",
     "oxfmt": "^0.48.0",
     "oxlint": "^1.63.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "4.1.4"
   }
 }

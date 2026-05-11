@@ -7,3 +7,6 @@
 [submodule ".repos/t3code"]
 	path = .repos/t3code
 	url = https://github.com/pingdotgg/t3code
+[submodule ".repos/effect"]
+	path = .repos/effect
+	url = https://github.com/Effect-TS/effect-smol

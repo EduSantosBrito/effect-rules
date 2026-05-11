@@ -32,10 +32,12 @@ For local development before publishing:
 - `effect/no-disable-validation`
 - `effect/no-sql-type-parameter`
 - `effect/prefer-option-from-nullable`
+- `effect/prefer-inline-context-service-shape`
 - `effect/no-effect-ignore`
 - `effect/no-effect-catchallcause`
 - `effect/no-effect-escape-hatch`
 - `effect/no-unsupported-effect-api`
+- `effect/no-unnecessary-effect-tx`
 - `effect/no-silent-error-swallow`
 - `effect/no-service-option`
 - `effect/no-nested-layer-provide`
@@ -45,6 +47,7 @@ For local development before publishing:
 - `effect/no-unknown-shape-probing`
 - `effect/no-localstorage`
 - `effect/no-manual-layer-build-in-tests`
+- `effect/no-effect-run-in-tests`
 - `effect/no-vitest-import`
 - `effect/prefer-effect-vitest`
 - `effect/prefer-effect-vitest-assert`
@@ -57,10 +60,14 @@ For local development before publishing:
 - `effect/no-promise-catch`
 - `effect/no-promise-reject`
 - `effect/prefer-tagged-constructor`
+- `effect/prefer-data-tagged-enum`
 - `effect/no-manual-tag-check`
 - `effect/prefer-schema-tagged-error-class`
 - `effect/prefer-effect-fn`
+- `effect/no-return-yieldable-error`
+- `effect/no-effect-fn-immediate-invocation`
 - `effect/prefer-match-validation`
+- `effect/prefer-match-value`
 - `effect/prefer-yieldable-error-in-match`
 - `effect/no-as-effect-method-reference`
 - `effect/prefer-context-service`
@@ -94,16 +101,45 @@ const State = Data.taggedEnum<State>();
 const state = State.Idle();
 ```
 
+`effect/prefer-data-tagged-enum` flags manual `_tag` union type aliases:
+
+```ts
+export type AuthHttpError =
+  | { readonly _tag: "Unauthorized" }
+  | { readonly _tag: "BadRequest"; readonly reason: string };
+```
+
+Prefer `Data.TaggedEnum`:
+
+```ts
+export type AuthHttpError = Data.TaggedEnum<{
+  Unauthorized: {};
+  BadRequest: { readonly reason: string };
+}>;
+
+export const AuthHttpError = Data.taggedEnum<AuthHttpError>();
+```
+
 `effect/prefer-schema-tagged-error-class` flags `Data.TaggedError`. Prefer `Schema.TaggedErrorClass` for domain errors.
 
 `effect/prefer-effect-fn` flags reusable functions that return `Effect.gen(...)`. Prefer `Effect.fn("Domain.method")` or `Effect.fnUntraced(...)`.
 
+`effect/no-return-yieldable-error` flags `return yield* domainError` because it infers `undefined` instead of `void`. Prefer `yield* domainError`.
+
+`effect/no-effect-fn-immediate-invocation` flags `Effect.fn(...)(...)()`. Prefer putting parameters on the generator function passed to `Effect.fn`.
+
 `effect/prefer-match-validation` flags validation-style `if` ladders that return `Effect.fail(new DomainError(...))` and end in `Effect.void`. Prefer `Match.type(...).pipe(...)` decision tables.
+
+`effect/prefer-match-value` flags return-only `switch` mappings over string cases. Prefer `Match.value(...).pipe(Match.when(...), Match.exhaustive)`.
 
 `effect/prefer-yieldable-error-in-match` flags `Match.when(..., () => Effect.fail(new DomainError(...)))`. Prefer `Match.when(..., () => new DomainError(...))` and yield the matcher result inside `Effect.fn` / `Effect.gen`.
 
 `effect/no-as-effect-method-reference` flags unbound `.asEffect` method references. Prefer returning the yieldable error directly from `Match` handlers.
 
 `effect/no-try-catch` flags `try` statements. Prefer `Effect.try`, `Effect.tryPromise`, `Effect.catch*`, or typed failures.
+
+`effect/prefer-inline-context-service-shape` flags object-shaped `Context.Service` types referenced through separate interfaces and optional fields in inline service shapes. Prefer an inline service shape and represent absence with `Option`. Primitive/no-shape services are ignored.
+
+`effect/no-unnecessary-effect-tx` flags `Effect.tx(...)` when the transaction body does not use obvious transactional APIs. Use `Effect.tx` for STM boundaries around `Tx*` operations, `Effect.txRetry`, or `Effect.Transaction`.
 
 Rules ported from executor patterns also flag raw JavaScript error handling (`throw`, built-in `Error`, `Promise.reject`, `.catch`, `instanceof Error`, unknown `.message`), broad TypeScript bypasses (`@ts-nocheck`), ad hoc parsing/probing (`JSON.parse`, `Reflect.get`, string `in` checks), Effect escape hatches (`die`/`orDie`), and direct `vitest` imports.
