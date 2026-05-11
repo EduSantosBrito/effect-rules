@@ -487,6 +487,91 @@ const schemaInputNameFromLayer = (
 
 const isEffectGenCall = (value: unknown): boolean => isCallToMember(value, "Effect", "gen");
 
+const staticEffectMembers = new Set([
+  "fail",
+  "gen",
+  "log",
+  "logDebug",
+  "logError",
+  "logInfo",
+  "logTrace",
+  "logWarning",
+  "succeed",
+  "sync",
+  "unit",
+  "void",
+]);
+
+const isStaticEffectExpression = (value: unknown): boolean => {
+  const node = asNode(value);
+  const member = node?.type === "CallExpression" ? asNode(node.callee) : node;
+  const name = propertyName(asNode(member)?.property);
+  return isIdentifier(asNode(member)?.object, "Effect") && staticEffectMembers.has(name ?? "");
+};
+
+const returnsStaticEffectCall = (value: unknown): boolean => {
+  const node = asNode(value);
+  if (node?.type !== "ArrowFunctionExpression" && node?.type !== "FunctionExpression") return false;
+  if (!Array.isArray(node.params) || node.params.length !== 0) return false;
+  if (isStaticEffectExpression(node.body)) return true;
+
+  const body = asNode(node.body);
+  if (body?.type !== "BlockStatement" || !Array.isArray(body.body) || body.body.length !== 1) {
+    return false;
+  }
+
+  const statement = asNode(body.body[0]);
+  return statement?.type === "ReturnStatement" && isStaticEffectExpression(statement.argument);
+};
+
+const isPubSubSubscribeCall = (value: unknown): boolean => {
+  const node = asNode(value);
+  if (node?.type !== "CallExpression") return false;
+  if (isMember(node.callee, "PubSub", "subscribe")) return true;
+
+  const callee = asNode(node.callee);
+  const objectName = expressionName(callee?.object)?.toLowerCase();
+  return (
+    callee?.type === "MemberExpression" &&
+    propertyName(callee.property) === "subscribe" &&
+    objectName?.includes("pubsub") === true
+  );
+};
+
+const isEffectAnnotateLogsCall = (value: unknown): boolean =>
+  isCallToMember(value, "Effect", "annotateLogs");
+
+const hasAnnotateLogsPipe = (value: unknown): boolean => {
+  const node = asNode(value);
+  if (node?.type !== "CallExpression") return false;
+  const callee = asNode(node.callee);
+  return (
+    callee?.type === "MemberExpression" &&
+    propertyName(callee.property) === "pipe" &&
+    Array.isArray(node.arguments) &&
+    node.arguments.some(isEffectAnnotateLogsCall)
+  );
+};
+
+const pipedEffectGen = (value: unknown): Node | undefined => {
+  const node = asNode(value);
+  if (node?.type !== "CallExpression") return undefined;
+  const callee = asNode(node.callee);
+  if (callee?.type !== "MemberExpression" || propertyName(callee.property) !== "pipe")
+    return undefined;
+  return isEffectGenCall(callee.object) ? asNode(callee.object) : undefined;
+};
+
+const isUnknownKeyword = (value: unknown): boolean => asNode(value)?.type === "TSUnknownKeyword";
+
+const isEffectTypeWithUnknownRequirement = (value: unknown): boolean => {
+  const node = asNode(value);
+  if (node?.type !== "TSTypeReference") return false;
+  const name = typeReferenceName(node);
+  if (name !== "Effect.Effect" && name !== "Effect") return false;
+  return isUnknownKeyword(typeParameterAt(node, 2));
+};
+
 const isTransactionalApi = (value: unknown): boolean => {
   const node = asNode(value);
   if (node?.type !== "MemberExpression") return false;
@@ -873,6 +958,25 @@ const noSqlTypeParameter = defineRule({
   },
 });
 
+const noUnknownRuntimeRequirements = defineRule({
+  meta: {
+    type: "problem",
+    docs: { description: "Disallow Effect runtime runners accepting unknown requirements." },
+  },
+  createOnce(context) {
+    return {
+      TSTypeReference(node) {
+        if (!isEffectTypeWithUnknownRequirement(node)) return;
+        context.report({
+          node,
+          message:
+            "Do not use unknown as the Effect requirement type. Thread the runtime context type through a generic R.",
+        });
+      },
+    };
+  },
+});
+
 const preferOptionFromNullable = defineRule({
   meta: { type: "suggestion", docs: { description: "Prefer Option.fromNullable." } },
   createOnce(context) {
@@ -1194,6 +1298,66 @@ const noNestedLayerProvide = defineRule({
             });
           }
         }
+      },
+    };
+  },
+});
+
+const preferStaticEffect = defineRule({
+  meta: {
+    type: "suggestion",
+    docs: { description: "Prefer static Effects over zero-argument Effect thunks." },
+  },
+  createOnce(context) {
+    return {
+      VariableDeclarator(node) {
+        if (!returnsStaticEffectCall(node.init)) return;
+        context.report({
+          node: asNode(node.init) ?? node,
+          message:
+            "Effects are already lazy. Define the Effect directly instead of a zero-arg thunk.",
+        });
+      },
+    };
+  },
+});
+
+const preferStreamFromPubSub = defineRule({
+  meta: {
+    type: "suggestion",
+    docs: { description: "Prefer Stream.fromPubSub over exposed PubSub subscriptions." },
+  },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        if (!isPubSubSubscribeCall(node)) return;
+        context.report({
+          node,
+          message: "Expose PubSub events with Stream.fromPubSub(...) instead of raw subscribe().",
+        });
+      },
+    };
+  },
+});
+
+const preferServiceLogAnnotations = defineRule({
+  meta: {
+    type: "suggestion",
+    docs: { description: "Prefer Effect.annotateLogs on Layer.effect service constructors." },
+  },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        if (!isCallToMember(node, "Layer", "effect") || !Array.isArray(node.arguments)) return;
+        const constructor = node.arguments[1];
+        const directGen = asNode(constructor);
+        const pipedGen = pipedEffectGen(constructor);
+        const reportNode = isEffectGenCall(directGen) ? directGen : pipedGen;
+        if (reportNode === undefined || hasAnnotateLogsPipe(constructor)) return;
+        context.report({
+          node: reportNode,
+          message: "Annotate service constructor logs with .pipe(Effect.annotateLogs(...)).",
+        });
       },
     };
   },
@@ -1912,6 +2076,7 @@ export default definePlugin({
     "no-ts-nocheck": noTsNocheck,
     "no-disable-validation": noDisableValidation,
     "no-sql-type-parameter": noSqlTypeParameter,
+    "no-unknown-runtime-requirements": noUnknownRuntimeRequirements,
     "prefer-option-from-nullable": preferOptionFromNullable,
     "prefer-inline-context-service-shape": preferInlineContextServiceShape,
     "no-effect-ignore": noEffectIgnore,
@@ -1922,6 +2087,9 @@ export default definePlugin({
     "no-silent-error-swallow": noSilentErrorSwallow,
     "no-service-option": noServiceOption,
     "no-nested-layer-provide": noNestedLayerProvide,
+    "prefer-static-effect": preferStaticEffect,
+    "prefer-stream-from-pubsub": preferStreamFromPubSub,
+    "prefer-service-log-annotations": preferServiceLogAnnotations,
     "no-void-expression": noVoidExpression,
     "no-direct-fetch": noDirectFetch,
     "no-json-parse": noJsonParse,

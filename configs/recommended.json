@@ -1,0 +1,21 @@
+{
+  "jsPlugins": ["effect-rules"],
+  "rules": {
+    "effect/no-explicit-any": "error",
+    "effect/no-type-casting": "error",
+    "effect/no-non-null-assertion": "error",
+    "effect/no-ts-nocheck": "error",
+    "effect/no-disable-validation": "error",
+    "effect/no-raw-throw": "error",
+    "effect/no-built-in-error-constructor": "error",
+    "effect/no-effect-fail-new-error": "error",
+    "effect/no-promise-reject": "error",
+    "effect/no-promise-catch": "error",
+    "effect/no-effect-ignore": "error",
+    "effect/no-silent-error-swallow": "error",
+    "effect/no-json-parse": "error",
+    "effect/no-unknown-shape-probing": "error",
+    "effect/no-unsupported-effect-api": "error",
+    "effect/no-unknown-runtime-requirements": "error"
+  }
+}

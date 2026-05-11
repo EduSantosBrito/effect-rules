@@ -1,12 +1,13 @@
 {
   "name": "effect-rules",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "description": "Custom oxlint rules for Effect TypeScript projects.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/EduSantosBrito/effect-rules.git"
   },
   "files": [
+    "configs",
     "dist",
     "README.md"
   ],
@@ -18,6 +19,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./configs": {
+      "types": "./dist/configs.d.ts",
+      "import": "./dist/configs.js"
     }
   },
   "scripts": {

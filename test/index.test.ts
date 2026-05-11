@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { recommended, strict } from "../src/configs";
 
 const root = process.cwd();
 const pluginPath = join(root, "src", "index.ts");
@@ -21,6 +22,31 @@ const lint = (
     JSON.stringify({
       jsPlugins: [pluginPath],
       rules: Object.fromEntries(rules.map((rule) => [rule, "error"])),
+    }),
+  );
+  writeFileSync(sourcePath, source);
+
+  const result = spawnSync("bun", ["--bun", "oxlint", "-c", configPath, sourcePath], {
+    cwd: root,
+    encoding: "utf8",
+  });
+
+  rmSync(directory, { recursive: true, force: true });
+  return {
+    status: result.status,
+    output: `${result.stdout}${result.stderr}`,
+  };
+};
+
+const lintWithExtends = (source: string, extendsPath: string, fileName = "fixture.ts") => {
+  const directory = mkdtempSync(join(tmpdir(), "effect-rules-"));
+  const configPath = join(directory, ".oxlintrc.json");
+  const sourcePath = join(directory, fileName);
+
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      extends: [extendsPath],
     }),
   );
   writeFileSync(sourcePath, source);
@@ -76,6 +102,11 @@ const ruleRegressionFixtures: ReadonlyArray<RuleFixture> = [
     message: /Do not use sql<Type>/,
   },
   {
+    rule: "no-unknown-runtime-requirements",
+    source: `const runWithRuntime = (effect: Effect.Effect<string, never, unknown>) => effect;`,
+    message: /Do not use unknown as the Effect requirement type/,
+  },
+  {
     rule: "prefer-option-from-nullable",
     source: `const option = value !== null ? Option.some(value) : Option.none();`,
     message: /Option\.fromNullable/,
@@ -119,6 +150,21 @@ const ruleRegressionFixtures: ReadonlyArray<RuleFixture> = [
     rule: "no-nested-layer-provide",
     source: `Layer.provide(Layer.provide(app, dependency), outer);`,
     message: /Avoid nested Layer\.provide/,
+  },
+  {
+    rule: "prefer-static-effect",
+    source: `const getClients = () => Effect.succeed(clients);`,
+    message: /Effects are already lazy/,
+  },
+  {
+    rule: "prefer-stream-from-pubsub",
+    source: `const subscribe = () => eventsPubSub.subscribe();`,
+    message: /Stream\.fromPubSub/,
+  },
+  {
+    rule: "prefer-service-log-annotations",
+    source: `const layer = Layer.effect(Service, Effect.gen(function* () { return Service.of({}); }));`,
+    message: /Effect\.annotateLogs/,
   },
   {
     rule: "no-void-expression",
@@ -294,6 +340,25 @@ describe("rule regressions", () => {
       assert.match(result.output, fixture.message);
     });
   }
+});
+
+describe("packaged configs", () => {
+  it("exports strict config for oxlint.config.ts", () => {
+    assert.deepStrictEqual(recommended.jsPlugins, ["effect-rules"]);
+    assert.strictEqual(recommended.rules["effect/no-explicit-any"], "error");
+    assert.deepStrictEqual(strict.jsPlugins, ["effect-rules"]);
+    assert.strictEqual(strict.rules["effect/prefer-static-effect"], "error");
+  });
+
+  it("loads strict config through oxlint extends", () => {
+    const result = lintWithExtends(
+      `const getClients = () => Effect.succeed(clients);`,
+      join(root, "configs", "strict.json"),
+    );
+
+    assert.notStrictEqual(result.status, 0);
+    assert.match(result.output, /Effects are already lazy/);
+  });
 });
 
 describe("prefer-inline-context-service-shape", () => {
