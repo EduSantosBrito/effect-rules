@@ -7,6 +7,7 @@
     "README.md"
   ],
   "type": "module",
+  "sideEffects": false,
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -16,10 +17,12 @@
     }
   },
   "scripts": {
-    "build": "bun --bun tsc --outDir dist --declaration",
-    "check": "bun --bun tsc --noEmit && bun --bun tsc -p tsconfig.test.json && bun run lint",
+    "build": "bun run clean && bun --bun tsc --outDir dist --declaration",
+    "clean": "rm -rf dist",
+    "check": "bun run build && bun --bun tsc --noEmit && bun --bun tsc -p tsconfig.test.json && bun run lint && bun run knip",
     "format": "bun --bun oxfmt --write .",
     "format:check": "bun --bun oxfmt --check .",
+    "knip": "knip",
     "lint": "bun --bun oxlint -c .oxlintrc.json .",
     "test": "bun --bun vitest run",
     "prepack": "bun run build"
@@ -31,6 +34,7 @@
     "@effect/vitest": "4.0.0-beta.65",
     "@types/bun": "latest",
     "effect": "4.0.0-beta.65",
+    "knip": "^6.12.2",
     "oxfmt": "^0.48.0",
     "oxlint": "^1.63.0",
     "typescript": "^5.9.3",
