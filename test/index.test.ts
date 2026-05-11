@@ -47,6 +47,7 @@ const lintWithExtends = (source: string, extendsPath: string, fileName = "fixtur
     configPath,
     JSON.stringify({
       extends: [extendsPath],
+      jsPlugins: [pluginPath],
     }),
   );
   writeFileSync(sourcePath, source);
@@ -182,6 +183,15 @@ const ruleRegressionFixtures: ReadonlyArray<RuleFixture> = [
     message: /Parse JSON with Effect Schema/,
   },
   {
+    rule: "no-schema-error-response-leak",
+    source: `
+      const app = Effect.catchTag(program, "SchemaError", (error) =>
+        Effect.succeed(HttpServerResponse.jsonUnsafe({ error }, { status: 400 }))
+      );
+    `,
+    message: /Do not expose SchemaError details/,
+  },
+  {
     rule: "no-unknown-shape-probing",
     source: `Reflect.get(value, "name");`,
     message: /Do not probe unknown shapes/,
@@ -190,6 +200,11 @@ const ruleRegressionFixtures: ReadonlyArray<RuleFixture> = [
     rule: "no-localstorage",
     source: `localStorage.getItem("token");`,
     message: /Do not use localStorage/,
+  },
+  {
+    rule: "no-raw-indexeddb",
+    source: `indexedDB.open("app");`,
+    message: /Do not use raw IndexedDB APIs/,
   },
   {
     rule: "no-manual-layer-build-in-tests",
@@ -324,6 +339,32 @@ const ruleRegressionFixtures: ReadonlyArray<RuleFixture> = [
     rule: "no-try-catch",
     source: `try { run(); } catch (error) { handle(error); }`,
     message: /Avoid try\/catch/,
+  },
+  {
+    rule: "prefer-shared-managed-runtime",
+    source: `Effect.runPromise(program.pipe(Effect.provide(AppLayer)));`,
+    message: /shared ManagedRuntime/,
+  },
+  {
+    rule: "require-callback-cleanup-for-listeners",
+    source: `Effect.callback((resume) => { socket.once("close", () => resume(Effect.void)); });`,
+    message: /Return a cleanup Effect/,
+  },
+  {
+    rule: "prefer-scoped-temp-cleanup",
+    source: `
+      const program = Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const dir = yield* fs.makeTempDirectory();
+        yield* work(dir).pipe(Effect.ensuring(fs.remove(dir, { recursive: true })));
+      });
+    `,
+    message: /makeTempDirectoryScoped/,
+  },
+  {
+    rule: "no-nested-semaphore-acquire",
+    source: `fromLock.withPermit(toLock.withPermit(Effect.void));`,
+    message: /Do not acquire a semaphore while holding another semaphore/,
   },
 ];
 
@@ -648,6 +689,157 @@ describe("no-effect-fn-immediate-invocation", () => {
 
     assert.notStrictEqual(result.status, 0);
     assert.match(result.output, /Do not write Effect\.fn\(\.\.\.\)\(\.\.\.\)\(\)/);
+  });
+});
+
+describe("reference-backed boundary rules", () => {
+  it("allows plain Effect runners at JS boundaries", () => {
+    const result = lint(`Effect.runPromise(program);`, ["effect/prefer-shared-managed-runtime"]);
+
+    assert.strictEqual(result.status, 0, result.output);
+  });
+
+  it("allows Effect.callback without registered listeners", () => {
+    const result = lint(
+      `
+        Effect.callback((resume) => {
+          legacyConvert(input, (error, output) => {
+            resume(error ? Effect.die(error) : Effect.succeed(output));
+          });
+        });
+      `,
+      ["effect/require-callback-cleanup-for-listeners"],
+    );
+
+    assert.strictEqual(result.status, 0, result.output);
+  });
+
+  it("allows Effect.callback listener registrations with cleanup", () => {
+    const result = lint(
+      `
+        Effect.callback((resume) => {
+          const onClose = () => resume(Effect.void);
+          socket.once("close", onClose);
+          return Effect.sync(() => socket.off("close", onClose));
+        });
+      `,
+      ["effect/require-callback-cleanup-for-listeners"],
+    );
+
+    assert.strictEqual(result.status, 0, result.output);
+  });
+
+  it("allows persistent unscoped temp resources without manual cleanup", () => {
+    const result = lint(
+      `
+        const getRuntimeDirectory = Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const parent = yield* fs.makeTempDirectory({ prefix: "runtime-" });
+          return path.join(parent, "helper");
+        });
+      `,
+      ["effect/prefer-scoped-temp-cleanup"],
+    );
+
+    assert.strictEqual(result.status, 0, result.output);
+  });
+});
+
+describe("no-nested-semaphore-acquire", () => {
+  it("accepts sequential semaphore acquisition", () => {
+    const result = lint(
+      `
+        const program = Effect.gen(function* () {
+          yield* first.withPermit(Effect.void);
+          yield* second.withPermit(Effect.void);
+        });
+      `,
+      ["effect/no-nested-semaphore-acquire"],
+    );
+
+    assert.strictEqual(result.status, 0, result.output);
+  });
+
+  it("rejects curried nested withPermits", () => {
+    const result = lint(`fromLock.withPermits(1)(toLock.withPermits(1)(Effect.void));`, [
+      "effect/no-nested-semaphore-acquire",
+    ]);
+
+    assert.notStrictEqual(result.status, 0);
+    assert.match(result.output, /TxRef\/TxQueue/);
+  });
+
+  it("rejects module combinator nested acquisition", () => {
+    const result = lint(
+      `Semaphore.withPermit(fromLock, Semaphore.withPermits(toLock, 1, Effect.void));`,
+      ["effect/no-nested-semaphore-acquire"],
+    );
+
+    assert.notStrictEqual(result.status, 0);
+    assert.match(result.output, /coordinated state/);
+  });
+});
+
+describe("no-schema-error-response-leak", () => {
+  it("accepts logging SchemaError while returning generic response", () => {
+    const result = lint(
+      `
+        program.pipe(
+          Effect.catchTag("SchemaError", (error) =>
+            Effect.logError("Decode failure", { cause: error }).pipe(
+              Effect.andThen(HttpServerResponse.jsonUnsafe({ error: "Bad request" }, { status: 400 }))
+            )
+          )
+        );
+      `,
+      ["effect/no-schema-error-response-leak"],
+    );
+
+    assert.strictEqual(result.status, 0, result.output);
+  });
+
+  it("rejects piped SchemaError responses containing error.message", () => {
+    const result = lint(
+      `
+        const app = program.pipe(
+          Effect.catchTag("SchemaError", (error) =>
+            HttpServerResponse.json({ message: error.message }, { status: 400 })
+          )
+        );
+      `,
+      ["effect/no-schema-error-response-leak"],
+    );
+
+    assert.notStrictEqual(result.status, 0);
+    assert.match(result.output, /generic decode error/);
+  });
+});
+
+describe("no-raw-indexeddb", () => {
+  it("accepts platform-browser IndexedDb service usage", () => {
+    const result = lint(
+      `
+        import * as IndexedDb from "@effect/platform-browser/IndexedDb";
+
+        const layer = IndexedDb.layerWindow;
+      `,
+      ["effect/no-raw-indexeddb"],
+    );
+
+    assert.strictEqual(result.status, 0, result.output);
+  });
+
+  it("rejects window.indexedDB and IDBKeyRange usage", () => {
+    const result = lint(
+      `
+        const request = window.indexedDB.open("app");
+        const range = IDBKeyRange.only("user-1");
+      `,
+      ["effect/no-raw-indexeddb"],
+    );
+
+    assert.notStrictEqual(result.status, 0);
+    assert.match(result.output, /Schema-backed tables/);
   });
 });
 

@@ -11,7 +11,7 @@ These rules focus on the Effect mistakes that usually survive typechecking: unty
 | Benefit                                | What the rules catch                                                                                | Example rules                                                                                        |
 | -------------------------------------- | --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | Keep failures typed                    | Raw throws, generic `Error`, `Promise.reject`, swallowed failures, `die` / `orDie` escape hatches   | `no-raw-throw`, `no-built-in-error-constructor`, `no-promise-reject`, `no-effect-ignore`             |
-| Make unsafe boundaries explicit        | `any`, casts, non-null assertions, unchecked JSON, ad hoc shape probing, skipped validation         | `no-explicit-any`, `no-type-casting`, `no-json-parse`, `no-disable-validation`                       |
+| Make unsafe boundaries explicit        | `any`, casts, non-null assertions, unchecked JSON, ad hoc shape probing, skipped validation         | `no-explicit-any`, `no-type-casting`, `no-json-parse`, `no-schema-error-response-leak`               |
 | Protect Effect architecture            | Optional services, nested layer wiring, direct fetch, manual service tags, unvalidated SQL decoding | `no-service-option`, `prefer-context-service`, `no-nested-layer-provide`, `no-direct-fetch`          |
 | Standardize Effect style               | Yieldable errors, `Effect.fn`, `Match` decision tables, constructors for tagged values              | `prefer-yieldable-error`, `prefer-effect-fn`, `prefer-match-validation`, `prefer-tagged-constructor` |
 | Make tests run like production Effects | Direct `vitest` imports, manual runners, manual layer builds, `expect` instead of Effect assertions | `prefer-effect-vitest`, `no-effect-run-in-tests`, `no-vitest-import`, `prefer-effect-vitest-assert`  |
@@ -158,19 +158,25 @@ Then add style and architecture rules as teams converge on the conventions.
 
 ### Effect Architecture
 
-| Rule                                         | Benefit                                                               |
-| -------------------------------------------- | --------------------------------------------------------------------- |
-| `effect/prefer-context-service`              | Standardizes dependency definitions on `Context.Service`.             |
-| `effect/prefer-inline-context-service-shape` | Keeps service shape, config input, and layer construction local.      |
-| `effect/no-service-option`                   | Makes required dependencies impossible to silently omit.              |
-| `effect/no-nested-layer-provide`             | Keeps layer graphs flatter and easier to inspect.                     |
-| `effect/prefer-static-effect`                | Avoids zero-argument thunks around already-lazy Effects.              |
-| `effect/prefer-stream-from-pubsub`           | Exposes PubSub events as scoped Streams instead of raw subscriptions. |
-| `effect/prefer-service-log-annotations`      | Ensures service constructor logs carry service metadata.              |
-| `effect/no-unnecessary-effect-tx`            | Reserves `Effect.tx` for real STM transaction boundaries.             |
-| `effect/no-direct-fetch`                     | Pushes HTTP through typed Effect clients or adapters.                 |
-| `effect/no-inline-schema-compile`            | Hoists Schema compilation so hot paths do not rebuild decoders.       |
-| `effect/no-localstorage`                     | Blocks fragile auth or secret state in browser storage.               |
+| Rule                                            | Benefit                                                               |
+| ----------------------------------------------- | --------------------------------------------------------------------- |
+| `effect/prefer-context-service`                 | Standardizes dependency definitions on `Context.Service`.             |
+| `effect/prefer-inline-context-service-shape`    | Keeps service shape, config input, and layer construction local.      |
+| `effect/no-service-option`                      | Makes required dependencies impossible to silently omit.              |
+| `effect/no-nested-layer-provide`                | Keeps layer graphs flatter and easier to inspect.                     |
+| `effect/prefer-static-effect`                   | Avoids zero-argument thunks around already-lazy Effects.              |
+| `effect/prefer-stream-from-pubsub`              | Exposes PubSub events as scoped Streams instead of raw subscriptions. |
+| `effect/prefer-service-log-annotations`         | Ensures service constructor logs carry service metadata.              |
+| `effect/no-unnecessary-effect-tx`               | Reserves `Effect.tx` for real STM transaction boundaries.             |
+| `effect/no-direct-fetch`                        | Pushes HTTP through typed Effect clients or adapters.                 |
+| `effect/no-inline-schema-compile`               | Hoists Schema compilation so hot paths do not rebuild decoders.       |
+| `effect/no-localstorage`                        | Blocks fragile auth or secret state in browser storage.               |
+| `effect/no-raw-indexeddb`                       | Uses schema-backed platform IndexedDb instead of raw browser APIs.    |
+| `effect/no-schema-error-response-leak`          | Logs decode failures without exposing SchemaError details to clients. |
+| `effect/prefer-shared-managed-runtime`          | Keeps layer-provided JS boundaries on shared managed runtimes.        |
+| `effect/require-callback-cleanup-for-listeners` | Prevents callback listener/resource leaks on interruption.            |
+| `effect/prefer-scoped-temp-cleanup`             | Uses scoped temp resources instead of manual cleanup.                 |
+| `effect/no-nested-semaphore-acquire`            | Avoids deadlock-prone nested semaphore acquisition.                   |
 
 ### Data Modeling And Control Flow
 

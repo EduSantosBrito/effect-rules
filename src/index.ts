@@ -109,6 +109,21 @@ const isEffectRunner = (value: unknown): boolean => {
   return node?.type === "MemberExpression";
 };
 
+const effectRunnerName = (value: unknown): string | undefined => {
+  const node = asNode(value);
+  if (node?.type !== "MemberExpression" || !isIdentifier(node.object, "Effect")) return undefined;
+  const method = propertyName(node.property);
+  if (
+    method !== "runPromise" &&
+    method !== "runPromiseExit" &&
+    method !== "runSync" &&
+    method !== "runSyncExit"
+  ) {
+    return undefined;
+  }
+  return method;
+};
+
 const isTestFilename = (filename: string): boolean =>
   /(?:^|[/\\])(?:test|tests|__tests__)(?:[/\\]|$)/.test(filename) ||
   /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(filename);
@@ -117,6 +132,9 @@ const isCallToMember = (value: unknown, objectName: string, memberName: string):
   const node = asNode(value);
   return node?.type === "CallExpression" && isMember(node.callee, objectName, memberName);
 };
+
+const isEffectCallbackCall = (value: unknown): boolean =>
+  isCallToMember(value, "Effect", "callback");
 
 const isNewExpression = (value: unknown): boolean => asNode(value)?.type === "NewExpression";
 
@@ -599,6 +617,288 @@ const containsTransactionalApi = (value: unknown, seen = new Set<unknown>()): bo
       continue;
     }
     if (containsTransactionalApi(child, seen)) return true;
+  }
+  return false;
+};
+
+const containsCallProperty = (
+  value: unknown,
+  properties: ReadonlySet<string>,
+  seen = new Set<unknown>(),
+): boolean => {
+  if (typeof value !== "object" || value === null || seen.has(value)) return false;
+  seen.add(value);
+
+  const node = asNode(value);
+  if (node?.type === "CallExpression") {
+    const callee = asNode(node.callee);
+    if (callee?.type === "MemberExpression") {
+      const name = propertyName(callee.property);
+      if (name !== undefined && properties.has(name)) return true;
+    }
+    if (isIdentifier(node.callee)) {
+      const name = identifierName(node.callee);
+      if (name !== undefined && properties.has(name)) return true;
+    }
+  }
+
+  for (const [key, child] of Object.entries(value)) {
+    if (key === "parent" || key === "range") continue;
+    if (Array.isArray(child)) {
+      if (child.some((item) => containsCallProperty(item, properties, seen))) return true;
+      continue;
+    }
+    if (containsCallProperty(child, properties, seen)) return true;
+  }
+  return false;
+};
+
+const containsIdentifierName = (
+  value: unknown,
+  name: string,
+  seen = new Set<unknown>(),
+): boolean => {
+  if (typeof value !== "object" || value === null || seen.has(value)) return false;
+  seen.add(value);
+
+  if (isIdentifier(value, name)) return true;
+
+  for (const [key, child] of Object.entries(value)) {
+    if (key === "parent" || key === "range" || key === "key") continue;
+    if (Array.isArray(child)) {
+      if (child.some((item) => containsIdentifierName(item, name, seen))) return true;
+      continue;
+    }
+    if (containsIdentifierName(child, name, seen)) return true;
+  }
+  return false;
+};
+
+const schemaErrorCatchTagHandler = (node: Node): Node | undefined => {
+  if (node.type !== "CallExpression" || !Array.isArray(node.arguments)) return undefined;
+  if (!isEffectMember(node.callee, "catchTag")) return undefined;
+  if (literalValue(node.arguments[0]) === "SchemaError") return asNode(node.arguments[1]);
+  if (literalValue(node.arguments[1]) === "SchemaError") return asNode(node.arguments[2]);
+  return undefined;
+};
+
+const isHttpJsonResponseCall = (value: unknown): boolean => {
+  const node = asNode(value);
+  if (node?.type !== "CallExpression") return false;
+  const callee = asNode(node.callee);
+  if (callee?.type !== "MemberExpression") return false;
+  const name = propertyName(callee.property);
+  if (name !== "json" && name !== "jsonUnsafe") return false;
+  return expressionName(callee.object) === "HttpServerResponse";
+};
+
+const containsHttpJsonResponseLeaking = (
+  value: unknown,
+  name: string,
+  seen = new Set<unknown>(),
+): boolean => {
+  if (typeof value !== "object" || value === null || seen.has(value)) return false;
+  seen.add(value);
+
+  const node = asNode(value);
+  if (isHttpJsonResponseCall(node) && Array.isArray(node?.arguments)) {
+    return node.arguments.some((argument) => containsIdentifierName(argument, name));
+  }
+
+  for (const [key, child] of Object.entries(value)) {
+    if (key === "parent" || key === "range") continue;
+    if (Array.isArray(child)) {
+      if (child.some((item) => containsHttpJsonResponseLeaking(item, name, seen))) return true;
+      continue;
+    }
+    if (containsHttpJsonResponseLeaking(child, name, seen)) return true;
+  }
+  return false;
+};
+
+const handlerLeaksSchemaErrorResponse = (value: unknown): boolean => {
+  const node = asNode(value);
+  if (node === undefined || !isFunction(node) || !Array.isArray(node.params)) return false;
+  const errorName = identifierName(node.params[0]);
+  if (errorName === undefined) return false;
+  return containsHttpJsonResponseLeaking(node.body, errorName);
+};
+
+const rawIndexedDbCallNames = new Set([
+  "indexedDB.cmp",
+  "indexedDB.deleteDatabase",
+  "indexedDB.open",
+  "window.indexedDB.cmp",
+  "window.indexedDB.deleteDatabase",
+  "window.indexedDB.open",
+  "globalThis.indexedDB.cmp",
+  "globalThis.indexedDB.deleteDatabase",
+  "globalThis.indexedDB.open",
+  "IDBKeyRange.bound",
+  "IDBKeyRange.lowerBound",
+  "IDBKeyRange.only",
+  "IDBKeyRange.upperBound",
+  "window.IDBKeyRange.bound",
+  "window.IDBKeyRange.lowerBound",
+  "window.IDBKeyRange.only",
+  "window.IDBKeyRange.upperBound",
+  "globalThis.IDBKeyRange.bound",
+  "globalThis.IDBKeyRange.lowerBound",
+  "globalThis.IDBKeyRange.only",
+  "globalThis.IDBKeyRange.upperBound",
+]);
+
+const isRawIndexedDbMember = (value: unknown): boolean => {
+  const name = expressionName(value);
+  return name === "window.indexedDB" || name === "globalThis.indexedDB";
+};
+
+const layerProvideMethods = new Set([
+  "provide",
+  "provideMerge",
+  "provideService",
+  "provideContext",
+]);
+
+const hasInlineLayerProvide = (value: unknown): boolean => {
+  const node = asNode(value);
+  if (node?.type !== "CallExpression") return false;
+  const callee = asNode(node.callee);
+  if (callee?.type !== "MemberExpression") return false;
+  const method = propertyName(callee.property);
+  if (method === "pipe" && Array.isArray(node.arguments)) {
+    return node.arguments.some((argument) => {
+      const argumentNode = asNode(argument);
+      if (argumentNode?.type !== "CallExpression") return false;
+      const argumentCallee = asNode(argumentNode.callee);
+      if (argumentCallee?.type !== "MemberExpression") return false;
+      const argumentMethod = propertyName(argumentCallee.property);
+      return (
+        argumentMethod !== undefined &&
+        layerProvideMethods.has(argumentMethod) &&
+        (isIdentifier(argumentCallee.object, "Effect") ||
+          isIdentifier(argumentCallee.object, "Layer"))
+      );
+    });
+  }
+  return (
+    method !== undefined &&
+    layerProvideMethods.has(method) &&
+    (isIdentifier(callee.object, "Effect") || isIdentifier(callee.object, "Layer"))
+  );
+};
+
+const effectRunnerInlineProvidedArgument = (node: Node): Node | undefined => {
+  if (node.type !== "CallExpression" || effectRunnerName(node.callee) === undefined)
+    return undefined;
+  if (!Array.isArray(node.arguments) || node.arguments.length === 0) return undefined;
+  const argument = node.arguments[0];
+  return hasInlineLayerProvide(argument) ? asNode(argument) : undefined;
+};
+
+const callbackRegistrationMethods = new Set([
+  "addEventListener",
+  "listen",
+  "on",
+  "once",
+  "setInterval",
+  "setTimeout",
+]);
+
+const functionReturnsCleanup = (value: unknown): boolean => {
+  const node = asNode(value);
+  if (node?.type !== "ArrowFunctionExpression" && node?.type !== "FunctionExpression") return false;
+  if (isStaticEffectExpression(node.body)) return true;
+
+  const body = asNode(node.body);
+  if (body?.type !== "BlockStatement" || !Array.isArray(body.body)) return false;
+  return body.body.some((statementValue) => {
+    const statement = asNode(statementValue);
+    return statement?.type === "ReturnStatement" && asNode(statement.argument) !== undefined;
+  });
+};
+
+const effectCallbackNeedingCleanup = (node: Node): Node | undefined => {
+  if (
+    !isEffectCallbackCall(node) ||
+    !Array.isArray(node.arguments) ||
+    node.arguments.length === 0
+  ) {
+    return undefined;
+  }
+  const callback = asNode(node.arguments[0]);
+  if (callback === undefined) return undefined;
+  if (!containsCallProperty(callback, callbackRegistrationMethods)) return undefined;
+  if (functionReturnsCleanup(callback)) return undefined;
+  return callback;
+};
+
+const tempResourceMethods = new Set(["makeTempDirectory", "makeTempFile"]);
+const tempCleanupMethods = new Set(["remove", "rm", "unlink"]);
+
+const isUnscopedTempResourceCall = (node: Node): boolean => {
+  if (node.type !== "CallExpression") return false;
+  const callee = asNode(node.callee);
+  return (
+    callee?.type === "MemberExpression" &&
+    tempResourceMethods.has(propertyName(callee.property) ?? "")
+  );
+};
+
+const enclosingFunctionBody = (value: unknown): Node | undefined => {
+  let current = asNode(value);
+  while (current !== undefined) {
+    if (isFunction(current)) return asNode(current.body);
+    current = asNode(current.parent);
+  }
+  return undefined;
+};
+
+const semaphoreAcquireEffectArgument = (node: Node): unknown => {
+  if (node.type !== "CallExpression" || !Array.isArray(node.arguments)) return undefined;
+
+  const callee = asNode(node.callee);
+  if (callee?.type === "MemberExpression") {
+    const method = propertyName(callee.property);
+    if (method === "withPermits" && isIdentifier(callee.object, "Semaphore")) {
+      return node.arguments[2];
+    }
+    if (method === "withPermit" && isIdentifier(callee.object, "Semaphore"))
+      return node.arguments[1];
+    if (method === "withPermit" && node.arguments.length >= 1) return node.arguments[0];
+  }
+
+  const curried = asNode(callee);
+  if (curried?.type === "CallExpression" && Array.isArray(curried.arguments)) {
+    const curriedCallee = asNode(curried.callee);
+    if (curriedCallee?.type !== "MemberExpression") return undefined;
+    const method = propertyName(curriedCallee.property);
+    if (method === "withPermit" || method === "withPermits") return node.arguments[0];
+  }
+
+  return undefined;
+};
+
+const isSemaphoreAcquireCall = (value: unknown): boolean => {
+  const node = asNode(value);
+  if (node === undefined) return false;
+  return asNode(semaphoreAcquireEffectArgument(node)) !== undefined;
+};
+
+const containsNestedSemaphoreAcquire = (value: unknown, seen = new Set<unknown>()): boolean => {
+  if (typeof value !== "object" || value === null || seen.has(value)) return false;
+  seen.add(value);
+
+  const node = asNode(value);
+  if (node !== undefined && isSemaphoreAcquireCall(node)) return true;
+
+  for (const [key, child] of Object.entries(value)) {
+    if (key === "parent" || key === "range") continue;
+    if (Array.isArray(child)) {
+      if (child.some((item) => containsNestedSemaphoreAcquire(item, seen))) return true;
+      continue;
+    }
+    if (containsNestedSemaphoreAcquire(child, seen)) return true;
   }
   return false;
 };
@@ -1417,6 +1717,26 @@ const noJsonParse = defineRule({
   },
 });
 
+const noSchemaErrorResponseLeak = defineRule({
+  meta: {
+    type: "problem",
+    docs: { description: "Disallow exposing SchemaError details in HTTP JSON responses." },
+  },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        const handler = schemaErrorCatchTagHandler(node);
+        if (handler === undefined || !handlerLeaksSchemaErrorResponse(handler)) return;
+        context.report({
+          node,
+          message:
+            "Do not expose SchemaError details in HTTP responses. Log the cause and return a generic decode error.",
+        });
+      },
+    };
+  },
+});
+
 const noUnknownShapeProbing = defineRule({
   meta: {
     type: "problem",
@@ -1451,6 +1771,31 @@ const noLocalStorage = defineRule({
         if (node.name === "localStorage") {
           context.report({ node, message: "Do not use localStorage for auth state or secrets." });
         }
+      },
+    };
+  },
+});
+
+const noRawIndexedDb = defineRule({
+  meta: { type: "problem", docs: { description: "Disallow raw IndexedDB browser APIs." } },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        const name = expressionName(node.callee);
+        if (name === undefined || !rawIndexedDbCallNames.has(name)) return;
+        context.report({
+          node,
+          message:
+            "Do not use raw IndexedDB APIs. Use @effect/platform-browser IndexedDb with Schema-backed tables.",
+        });
+      },
+      MemberExpression(node) {
+        if (!isRawIndexedDbMember(node)) return;
+        context.report({
+          node,
+          message:
+            "Do not use raw IndexedDB APIs. Use @effect/platform-browser IndexedDb with Schema-backed tables.",
+        });
       },
     };
   },
@@ -2067,6 +2412,87 @@ const noTryCatch = defineRule({
   },
 });
 
+const preferSharedManagedRuntime = defineRule({
+  meta: {
+    type: "suggestion",
+    docs: { description: "Prefer shared ManagedRuntime for layer-provided JS boundaries." },
+  },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        const provided = effectRunnerInlineProvidedArgument(node);
+        if (provided === undefined) return;
+        context.report({
+          node: provided,
+          message:
+            "Do not provide layers inside Effect runners. Use a shared ManagedRuntime at the JS boundary.",
+        });
+      },
+    };
+  },
+});
+
+const requireCallbackCleanupForListeners = defineRule({
+  meta: {
+    type: "problem",
+    docs: { description: "Require Effect.callback cleanup when registering listeners." },
+  },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        const callback = effectCallbackNeedingCleanup(node);
+        if (callback === undefined) return;
+        context.report({
+          node: callback,
+          message:
+            "Return a cleanup Effect from Effect.callback when registering listeners or resources.",
+        });
+      },
+    };
+  },
+});
+
+const preferScopedTempCleanup = defineRule({
+  meta: {
+    type: "suggestion",
+    docs: { description: "Prefer scoped temporary resources over manual cleanup." },
+  },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        if (!isUnscopedTempResourceCall(node)) return;
+        const body = enclosingFunctionBody(node);
+        if (body === undefined || !containsCallProperty(body, tempCleanupMethods)) return;
+        const method = propertyName(asNode(node.callee)?.property);
+        context.report({
+          node,
+          message: `Use ${method}Scoped with Effect.scoped instead of manual temp cleanup.`,
+        });
+      },
+    };
+  },
+});
+
+const noNestedSemaphoreAcquire = defineRule({
+  meta: {
+    type: "problem",
+    docs: { description: "Disallow acquiring semaphores while holding another semaphore." },
+  },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        const effect = semaphoreAcquireEffectArgument(node);
+        if (effect === undefined || !containsNestedSemaphoreAcquire(effect)) return;
+        context.report({
+          node,
+          message:
+            "Do not acquire a semaphore while holding another semaphore. Use TxRef/TxQueue with Effect.tx for coordinated state.",
+        });
+      },
+    };
+  },
+});
+
 export default definePlugin({
   meta: { name: "effect" },
   rules: {
@@ -2093,8 +2519,10 @@ export default definePlugin({
     "no-void-expression": noVoidExpression,
     "no-direct-fetch": noDirectFetch,
     "no-json-parse": noJsonParse,
+    "no-schema-error-response-leak": noSchemaErrorResponseLeak,
     "no-unknown-shape-probing": noUnknownShapeProbing,
     "no-localstorage": noLocalStorage,
+    "no-raw-indexeddb": noRawIndexedDb,
     "no-manual-layer-build-in-tests": noManualLayerBuildInTests,
     "no-effect-run-in-tests": noEffectRunInTests,
     "no-vitest-import": noVitestImport,
@@ -2121,5 +2549,9 @@ export default definePlugin({
     "prefer-context-service": preferContextService,
     "no-inline-schema-compile": noInlineSchemaCompile,
     "no-try-catch": noTryCatch,
+    "prefer-shared-managed-runtime": preferSharedManagedRuntime,
+    "require-callback-cleanup-for-listeners": requireCallbackCleanupForListeners,
+    "prefer-scoped-temp-cleanup": preferScopedTempCleanup,
+    "no-nested-semaphore-acquire": noNestedSemaphoreAcquire,
   },
 });

@@ -12,6 +12,7 @@ const recommendedRules = {
   "effect/no-effect-ignore": "error",
   "effect/no-silent-error-swallow": "error",
   "effect/no-json-parse": "error",
+  "effect/no-schema-error-response-leak": "error",
   "effect/no-unknown-shape-probing": "error",
   "effect/no-unsupported-effect-api": "error",
   "effect/no-unknown-runtime-requirements": "error",
@@ -31,6 +32,7 @@ const strictRules = {
   "effect/no-void-expression": "error",
   "effect/no-direct-fetch": "error",
   "effect/no-localstorage": "error",
+  "effect/no-raw-indexeddb": "error",
   "effect/no-manual-layer-build-in-tests": "error",
   "effect/no-effect-run-in-tests": "error",
   "effect/no-vitest-import": "error",
@@ -54,6 +56,10 @@ const strictRules = {
   "effect/no-inline-schema-compile": "error",
   "effect/no-try-catch": "error",
   "effect/no-unnecessary-effect-tx": "error",
+  "effect/prefer-shared-managed-runtime": "error",
+  "effect/require-callback-cleanup-for-listeners": "error",
+  "effect/prefer-scoped-temp-cleanup": "error",
+  "effect/no-nested-semaphore-acquire": "error",
 } as const;
 
 export const recommended = {
