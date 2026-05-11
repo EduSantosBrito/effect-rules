@@ -253,6 +253,21 @@ const isInputMakeCall = (value: unknown, inputName: string, parameterName: strin
   );
 };
 
+const inputMakeCallName = (value: unknown, parameterName: string): string | undefined => {
+  const node = asNode(value);
+  if (
+    node?.type !== "CallExpression" ||
+    !Array.isArray(node.arguments) ||
+    node.arguments.length !== 1 ||
+    !isIdentifier(node.arguments[0], parameterName)
+  ) {
+    return undefined;
+  }
+
+  const calleeName = expressionName(node.callee);
+  return calleeName?.endsWith(".make") === true ? calleeName.slice(0, -".make".length) : undefined;
+};
+
 const isLayerSucceedInputMake = (
   value: unknown,
   serviceName: string,
@@ -274,6 +289,28 @@ const isLayerSucceedInputMake = (
   );
 };
 
+const layerSucceedInputMakeName = (
+  value: unknown,
+  serviceName: string,
+  parameterName: string,
+): string | undefined => {
+  const outer = asNode(value);
+  const inner = asNode(outer?.callee);
+  if (
+    outer?.type !== "CallExpression" ||
+    !Array.isArray(outer.arguments) ||
+    outer.arguments.length !== 1 ||
+    inner?.type !== "CallExpression" ||
+    !isMember(inner.callee, "Layer", "succeed") ||
+    !Array.isArray(inner.arguments) ||
+    inner.arguments.length !== 1 ||
+    !isIdentifier(inner.arguments[0], serviceName)
+  ) {
+    return undefined;
+  }
+  return inputMakeCallName(outer.arguments[0], parameterName);
+};
+
 const isConfigDeclaration = (value: unknown, inputName: string, parameterName: string): boolean => {
   const node = asNode(value);
   const declaration = asNode(node?.declaration);
@@ -287,6 +324,18 @@ const isConfigDeclaration = (value: unknown, inputName: string, parameterName: s
   );
 };
 
+const configDeclarationInputName = (value: unknown, parameterName: string): string | undefined => {
+  const node = asNode(value);
+  const declaration = asNode(node?.declaration);
+  if (node?.type !== "VariableDeclaration" || declaration !== undefined) return undefined;
+  if (!Array.isArray(node.declarations) || node.declarations.length !== 1) return undefined;
+  const declarator = asNode(node.declarations[0]);
+  if (declarator?.type !== "VariableDeclarator" || !isIdentifier(declarator.id, "config")) {
+    return undefined;
+  }
+  return inputMakeCallName(declarator.init, parameterName);
+};
+
 const objectHasConfigSpread = (value: unknown): boolean => {
   const node = asNode(value);
   return (
@@ -294,7 +343,9 @@ const objectHasConfigSpread = (value: unknown): boolean => {
     Array.isArray(node.properties) &&
     node.properties.some((property) => {
       const propertyNode = asNode(property);
-      return propertyNode?.type === "SpreadElement" && isIdentifier(propertyNode.argument, "config");
+      return (
+        propertyNode?.type === "SpreadElement" && isIdentifier(propertyNode.argument, "config")
+      );
     })
   );
 };
@@ -324,7 +375,8 @@ const isConfigBlockLayer = (
   return node.body.some((statementValue) => {
     const statement = asNode(statementValue);
     return (
-      statement?.type === "ReturnStatement" && isServiceOfConfigObject(statement.argument, serviceName)
+      statement?.type === "ReturnStatement" &&
+      isServiceOfConfigObject(statement.argument, serviceName)
     );
   });
 };
@@ -350,7 +402,11 @@ const contextServiceTag = (value: unknown): string | undefined => {
 
 const isNamespacedServiceTag = (tag: string, serviceName: string): boolean => {
   const parts = tag.split("/");
-  return parts.length >= 2 && parts.every((part) => part.length > 0) && parts[parts.length - 1] === serviceName;
+  return (
+    parts.length >= 2 &&
+    parts.every((part) => part.length > 0) &&
+    parts[parts.length - 1] === serviceName
+  );
 };
 
 const staticLayerInitializer = (classDeclaration: Node): Node | undefined => {
@@ -368,7 +424,8 @@ const staticLayerInitializer = (classDeclaration: Node): Node | undefined => {
 const singleParameterName = (value: unknown): string | undefined => {
   const node = asNode(value);
   if (
-    (node?.type !== "ArrowFunctionExpression" && node?.type !== "FunctionExpression") ||
+    node === undefined ||
+    !isFunction(node) ||
     !Array.isArray(node.params) ||
     node.params.length !== 1
   ) {
@@ -380,13 +437,52 @@ const singleParameterName = (value: unknown): string | undefined => {
 const hasInputTypeParameter = (value: unknown, inputName: string): boolean => {
   const node = asNode(value);
   if (
-    (node?.type !== "ArrowFunctionExpression" && node?.type !== "FunctionExpression") ||
+    node === undefined ||
+    !isFunction(node) ||
     !Array.isArray(node.params) ||
     node.params.length !== 1
   ) {
     return false;
   }
   return isTypeofInputType(typeAnnotation(node.params[0]), inputName);
+};
+
+const inputTypeParameterName = (value: unknown): string | undefined => {
+  const node = asNode(value);
+  if (
+    node === undefined ||
+    !isFunction(node) ||
+    !Array.isArray(node.params) ||
+    node.params.length !== 1
+  ) {
+    return undefined;
+  }
+
+  const annotation = asNode(typeAnnotation(node.params[0]));
+  if (annotation?.type !== "TSTypeQuery") return undefined;
+  const name = typeQueryName(annotation.exprName);
+  return name?.endsWith(".Type") === true ? name.slice(0, -".Type".length) : undefined;
+};
+
+const schemaInputNameFromLayer = (
+  value: unknown,
+  serviceName: string,
+  parameterName: string,
+): string | undefined => {
+  const annotationInputName = inputTypeParameterName(value);
+  if (annotationInputName !== undefined) return annotationInputName;
+
+  const node = asNode(value);
+  const body = asNode(node?.body);
+  const directInputName = layerSucceedInputMakeName(body, serviceName, parameterName);
+  if (directInputName !== undefined) return directInputName;
+
+  if (body?.type !== "BlockStatement" || !Array.isArray(body.body)) return undefined;
+  for (const statement of body.body) {
+    const inputName = configDeclarationInputName(statement, parameterName);
+    if (inputName !== undefined) return inputName;
+  }
+  return undefined;
 };
 
 const isEffectGenCall = (value: unknown): boolean => isCallToMember(value, "Effect", "gen");
@@ -802,6 +898,8 @@ const preferInlineContextServiceShape = defineRule({
     docs: { description: "Prefer inline Context.Service shapes with Option for absence." },
   },
   createOnce(context) {
+    const layerFunctions = new Map<string, Node>();
+
     const checkServiceShape = (serviceShape: Node): void => {
       if (serviceShape.type !== "TSTypeLiteral") {
         if (serviceShape.type !== "TSTypeReference") return;
@@ -823,7 +921,30 @@ const preferInlineContextServiceShape = defineRule({
       }
     };
 
+    const resolveLayer = (value: unknown): Node | undefined => {
+      const node = asNode(value);
+      if (node === undefined) return undefined;
+      if (node.type === "ArrowFunctionExpression" || node.type === "FunctionExpression")
+        return node;
+      const name = identifierName(node);
+      return name === undefined ? undefined : layerFunctions.get(name);
+    };
+
     return {
+      FunctionDeclaration(node) {
+        const name = identifierName(node.id);
+        if (name !== undefined) layerFunctions.set(name, node);
+      },
+      VariableDeclarator(node) {
+        const name = identifierName(node.id);
+        const init = asNode(node.init);
+        if (
+          name !== undefined &&
+          (init?.type === "ArrowFunctionExpression" || init?.type === "FunctionExpression")
+        ) {
+          layerFunctions.set(name, init);
+        }
+      },
       ClassDeclaration(node) {
         const className = identifierName(node.id);
         if (className === undefined) return;
@@ -855,21 +976,28 @@ const preferInlineContextServiceShape = defineRule({
         const layer = staticLayerInitializer(node);
         if (layer === undefined) return;
 
-        const inputName = `${className}Input`;
-        const parameterName = singleParameterName(layer);
-        if (parameterName === undefined || !hasInputTypeParameter(layer, inputName)) {
+        const layerFunction = resolveLayer(layer);
+        if (layerFunction === undefined) return;
+
+        const parameterName = singleParameterName(layerFunction);
+        if (parameterName === undefined) return;
+
+        const inputName = schemaInputNameFromLayer(layerFunction, className, parameterName);
+        if (inputName === undefined) return;
+
+        if (!hasInputTypeParameter(layerFunction, inputName)) {
           context.report({
-            node: layer,
+            node: layerFunction,
             message: `Type the service layer input as typeof ${inputName}.Type.`,
           });
           return;
         }
 
-        const layerBody = asNode(layer.body);
+        const layerBody = asNode(layerFunction.body);
         if (hasCallableOrEffectMember(serviceShape)) {
           if (!isConfigBlockLayer(layerBody, className, inputName, parameterName)) {
             context.report({
-              node: layer,
+              node: layerFunction,
               message: `Build config with ${inputName}.make(input) and return ${className}.of({ ...config, ...methods }).`,
             });
           }
@@ -878,7 +1006,7 @@ const preferInlineContextServiceShape = defineRule({
 
         if (!isLayerSucceedInputMake(layerBody, className, inputName, parameterName)) {
           context.report({
-            node: layer,
+            node: layerFunction,
             message: `Pure config services should return Layer.succeed(${className})(${inputName}.make(input)).`,
           });
         }

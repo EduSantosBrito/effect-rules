@@ -449,6 +449,74 @@ describe("prefer-inline-context-service-shape", () => {
     assert.match(result.output, /typeof SomethingConfigInput\.Type/);
   });
 
+  it("does not infer schema input from type-only Input names", () => {
+    const result = lint(`
+      import { Context, Effect, Layer } from "effect";
+
+      interface AuthHttpConfigInput {
+        readonly baseUrl: URL;
+      }
+
+      export class AuthHttpConfig extends Context.Service<AuthHttpConfig, {
+        readonly baseUrl: URL;
+      }>()("effect-auth/AuthHttpConfig") {
+        static readonly layer = (input: AuthHttpConfigInput) =>
+          Layer.effect(AuthHttpConfig, Effect.succeed(AuthHttpConfig.of({
+            baseUrl: input.baseUrl,
+          })));
+      }
+    `);
+
+    assert.strictEqual(result.status, 0, result.output);
+  });
+
+  it("does not infer schema input from named layer function type-only Input names", () => {
+    const result = lint(`
+      import { Context, Effect, Layer } from "effect";
+
+      type AuthHttpConfigInput = {
+        readonly baseUrl: URL;
+      };
+
+      const authHttpConfigLayer = (input: AuthHttpConfigInput) =>
+        Layer.effect(AuthHttpConfig, Effect.succeed(AuthHttpConfig.of({
+          baseUrl: input.baseUrl,
+        })));
+
+      export class AuthHttpConfig extends Context.Service<AuthHttpConfig, {
+        readonly baseUrl: URL;
+      }>()("effect-auth/AuthHttpConfig") {
+        static readonly layer = authHttpConfigLayer;
+      }
+    `);
+
+    assert.strictEqual(result.status, 0, result.output);
+  });
+
+  it("checks schema input through named layer functions", () => {
+    const result = lint(`
+      import { Context, Layer, Option, Schema } from "effect";
+
+      const SomethingConfigInput = Schema.Struct({
+        optionalProp: Schema.Option(Schema.String),
+        requiredProp: Schema.String,
+      });
+
+      const somethingLayer = (input: { readonly requiredProp: string }) =>
+        Layer.succeed(SomethingConfig)(SomethingConfigInput.make(input));
+
+      export class SomethingConfig extends Context.Service<SomethingConfig, {
+        readonly optionalProp: Option.Option<string>;
+        readonly requiredProp: string;
+      }>()("test/config/SomethingConfig") {
+        static readonly layer = somethingLayer;
+      }
+    `);
+
+    assert.notStrictEqual(result.status, 0);
+    assert.match(result.output, /typeof SomethingConfigInput\.Type/);
+  });
+
   it("rejects method services built with Layer.succeed", () => {
     const result = lint(`
       import { Context, Effect, Layer, Option, Schema } from "effect";
