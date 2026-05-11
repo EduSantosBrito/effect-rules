@@ -348,6 +348,11 @@ const contextServiceTag = (value: unknown): string | undefined => {
   return typeof tag === "string" ? tag : undefined;
 };
 
+const isNamespacedServiceTag = (tag: string, serviceName: string): boolean => {
+  const parts = tag.split("/");
+  return parts.length >= 2 && parts.every((part) => part.length > 0) && parts[parts.length - 1] === serviceName;
+};
+
 const staticLayerInitializer = (classDeclaration: Node): Node | undefined => {
   const body = asNode(classDeclaration.body);
   if (body?.type !== "ClassBody" || !Array.isArray(body.body)) return undefined;
@@ -835,10 +840,10 @@ const preferInlineContextServiceShape = defineRule({
         }
 
         const tag = contextServiceTag(node.superClass);
-        if (tag !== undefined && tag !== className) {
+        if (tag !== undefined && !isNamespacedServiceTag(tag, className)) {
           context.report({
             node,
-            message: "Use the service class name as the Context.Service tag.",
+            message: `Use a namespaced Context.Service tag ending with /${className}.`,
           });
         }
 
