@@ -1,4 +1,4 @@
-import { defineRule, type Ranged } from "@oxlint/plugins";
+import { defineRule, type Ranged, type SourceCode } from "@oxlint/plugins";
 
 type Node = Ranged & {
   readonly type?: unknown;
@@ -11,6 +11,7 @@ type Node = Ranged & {
   readonly arguments?: ReadonlyArray<unknown>;
   readonly key?: unknown;
   readonly optional?: unknown;
+  readonly computed?: unknown;
   readonly source?: unknown;
   readonly specifiers?: ReadonlyArray<unknown>;
   readonly left?: unknown;
@@ -132,6 +133,14 @@ const isCallToMember = (value: unknown, objectName: string, memberName: string):
   const node = asNode(value);
   return node?.type === "CallExpression" && isMember(node.callee, objectName, memberName);
 };
+
+const isLayerMember = (value: unknown, memberName: string): boolean =>
+  isMember(value, "Layer", memberName);
+
+const isLayerProvideMember = (value: unknown): boolean => isLayerMember(value, "provide");
+
+const isLayerMergeMember = (value: unknown): boolean =>
+  isLayerMember(value, "merge") || isLayerMember(value, "mergeAll");
 
 const isEffectCallbackCall = (value: unknown): boolean =>
   isCallToMember(value, "Effect", "callback");
@@ -258,6 +267,149 @@ const expressionName = (value: unknown): string | undefined => {
   const memberName = propertyName(node.property);
   if (objectName === undefined || memberName === undefined) return undefined;
   return `${objectName}.${memberName}`;
+};
+
+const isStableLayerValueExpression = (value: unknown): boolean => {
+  const node = asNode(value);
+  if (node?.type === "Identifier") return true;
+  return (
+    node?.type === "MemberExpression" &&
+    node.computed !== true &&
+    propertyName(node.property) !== undefined &&
+    isStableLayerValueExpression(node.object)
+  );
+};
+
+const sameStableLayerValueExpression = (
+  sourceCode: SourceCode,
+  left: unknown,
+  right: unknown,
+): boolean => {
+  const leftNode = asNode(left);
+  const rightNode = asNode(right);
+  return (
+    leftNode !== undefined &&
+    rightNode !== undefined &&
+    isStableLayerValueExpression(leftNode) &&
+    isStableLayerValueExpression(rightNode) &&
+    sourceCode.getText(leftNode) === sourceCode.getText(rightNode)
+  );
+};
+
+const layerProvideOperatorDependency = (value: unknown): Node | undefined => {
+  const node = asNode(value);
+  if (
+    node?.type !== "CallExpression" ||
+    !isLayerProvideMember(node.callee) ||
+    !Array.isArray(node.arguments) ||
+    node.arguments.length !== 1
+  ) {
+    return undefined;
+  }
+  return asNode(node.arguments[0]);
+};
+
+const providedLayerDependency = (value: unknown): Node | undefined => {
+  const node = asNode(value);
+  if (node?.type !== "CallExpression" || !Array.isArray(node.arguments)) return undefined;
+
+  if (isLayerProvideMember(node.callee) && node.arguments.length === 2) {
+    return asNode(node.arguments[1]);
+  }
+
+  const curriedCallee = asNode(node.callee);
+  if (
+    curriedCallee?.type === "CallExpression" &&
+    isLayerProvideMember(curriedCallee.callee) &&
+    Array.isArray(curriedCallee.arguments) &&
+    curriedCallee.arguments.length === 1 &&
+    node.arguments.length === 1
+  ) {
+    return asNode(curriedCallee.arguments[0]);
+  }
+
+  const callee = asNode(node.callee);
+  if (
+    callee?.type === "MemberExpression" &&
+    propertyName(callee.property) === "pipe" &&
+    node.arguments.length === 1
+  ) {
+    return layerProvideOperatorDependency(node.arguments[0]);
+  }
+
+  return undefined;
+};
+
+const layerCompositionArguments = (value: unknown): ReadonlyArray<unknown> | undefined => {
+  const node = asNode(value);
+  if (node?.type !== "CallExpression" || !Array.isArray(node.arguments)) return undefined;
+  if (isLayerMergeMember(node.callee)) return node.arguments;
+
+  const curriedCallee = asNode(node.callee);
+  if (
+    curriedCallee?.type === "CallExpression" &&
+    isLayerMember(curriedCallee.callee, "merge") &&
+    Array.isArray(curriedCallee.arguments)
+  ) {
+    return [...curriedCallee.arguments, ...node.arguments];
+  }
+
+  return undefined;
+};
+
+const manualProvideMergeProvidedLayer = (
+  value: unknown,
+  sourceCode: SourceCode,
+): Node | undefined => {
+  const args = layerCompositionArguments(value);
+  if (args === undefined) return undefined;
+
+  for (const argument of args) {
+    const providedLayer = asNode(argument);
+    const dependency = providedLayerDependency(providedLayer);
+    if (dependency === undefined) continue;
+    if (
+      args.some(
+        (candidate) =>
+          candidate !== argument &&
+          sameStableLayerValueExpression(sourceCode, dependency, candidate),
+      )
+    ) {
+      return providedLayer;
+    }
+  }
+
+  return undefined;
+};
+
+const isPotentialLayerFactoryCall = (value: unknown): boolean => {
+  const node = asNode(value);
+  if (node?.type !== "CallExpression") return false;
+  if (isLayerMergeMember(node.callee) || isLayerProvideMember(node.callee)) return false;
+
+  const callee = asNode(node.callee);
+  if (callee?.type === "MemberExpression" && propertyName(callee.property) === "pipe") {
+    return false;
+  }
+
+  return expressionName(node.callee) !== undefined;
+};
+
+const repeatedLayerFactoryArgument = (value: unknown, sourceCode: SourceCode): Node | undefined => {
+  const args = layerCompositionArguments(value);
+  if (args === undefined) return undefined;
+
+  const seen = new Map<string, Node>();
+  for (const argument of args) {
+    const node = asNode(argument);
+    if (node === undefined || !isPotentialLayerFactoryCall(node)) continue;
+
+    const text = sourceCode.getText(node);
+    if (seen.has(text)) return node;
+    seen.set(text, node);
+  }
+
+  return undefined;
 };
 
 const isInputMakeCall = (value: unknown, inputName: string, parameterName: string): boolean => {
@@ -1582,7 +1734,10 @@ const noServiceOption = defineRule({
   },
 });
 
-const isLayerProvideCall = (value: unknown): boolean => isCallToMember(value, "Layer", "provide");
+const isLayerProvideCall = (value: unknown): boolean => {
+  const node = asNode(value);
+  return node?.type === "CallExpression" && isLayerProvideMember(node.callee);
+};
 
 const noNestedLayerProvide = defineRule({
   meta: { type: "problem", docs: { description: "Disallow nested Layer.provide." } },
@@ -1598,6 +1753,46 @@ const noNestedLayerProvide = defineRule({
             });
           }
         }
+      },
+    };
+  },
+});
+
+const preferLayerProvideMerge = defineRule({
+  meta: {
+    type: "suggestion",
+    docs: { description: "Prefer Layer.provideMerge over manual provide-then-merge wiring." },
+  },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        const providedLayer = manualProvideMergeProvidedLayer(node, context.sourceCode);
+        if (providedLayer === undefined) return;
+        context.report({
+          node: providedLayer,
+          message:
+            "Use Layer.provideMerge(...) when a dependency is provided and then merged back into the same layer graph.",
+        });
+      },
+    };
+  },
+});
+
+const noRepeatedLayerFactory = defineRule({
+  meta: {
+    type: "suggestion",
+    docs: { description: "Disallow repeated layer factory calls in one composition." },
+  },
+  createOnce(context) {
+    return {
+      CallExpression(node) {
+        const repeatedFactory = repeatedLayerFactoryArgument(node, context.sourceCode);
+        if (repeatedFactory === undefined) return;
+        context.report({
+          node: repeatedFactory,
+          message:
+            "Do not call the same layer factory multiple times in one composition. Bind it once and reuse the layer value.",
+        });
       },
     };
   },
@@ -2509,6 +2704,8 @@ const effectArchitectureRules = {
   "no-unnecessary-effect-tx": noUnnecessaryEffectTx,
   "no-service-option": noServiceOption,
   "no-nested-layer-provide": noNestedLayerProvide,
+  "prefer-layer-provide-merge": preferLayerProvideMerge,
+  "no-repeated-layer-factory": noRepeatedLayerFactory,
   "prefer-static-effect": preferStaticEffect,
   "prefer-stream-from-pubsub": preferStreamFromPubSub,
   "prefer-service-log-annotations": preferServiceLogAnnotations,

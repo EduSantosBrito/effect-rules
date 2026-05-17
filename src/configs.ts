@@ -26,6 +26,8 @@ const strictRules = {
   "effect/no-effect-escape-hatch": "error",
   "effect/no-service-option": "error",
   "effect/no-nested-layer-provide": "error",
+  "effect/prefer-layer-provide-merge": "error",
+  "effect/no-repeated-layer-factory": "error",
   "effect/prefer-static-effect": "error",
   "effect/prefer-stream-from-pubsub": "error",
   "effect/prefer-service-log-annotations": "error",

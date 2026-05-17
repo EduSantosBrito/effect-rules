@@ -86,6 +86,16 @@ const ruleRegressionFixtures: ReadonlyArray<RuleFixture> = [
     message: /Avoid nested Layer\.provide/,
   },
   {
+    rule: "prefer-layer-provide-merge",
+    source: `Layer.mergeAll(AuthLive.pipe(Layer.provide(workflowsLayer)), workflowsLayer);`,
+    message: /Layer\.provideMerge/,
+  },
+  {
+    rule: "no-repeated-layer-factory",
+    source: `Layer.mergeAll(makeDb(config), makeDb(config));`,
+    message: /Bind it once/,
+  },
+  {
     rule: "prefer-static-effect",
     source: `const getClients = () => Effect.succeed(clients);`,
     message: /Effects are already lazy/,

@@ -325,6 +325,90 @@ describe("no-effect-fn-immediate-invocation", () => {
   });
 });
 
+describe("layer composition intent rules", () => {
+  it("rejects provide-then-merge wiring in mergeAll", () => {
+    const result = lint(
+      `
+        import { Layer } from "effect";
+
+        const AppLayer = Layer.mergeAll(
+          AuthTestLive.pipe(Layer.provide(workflowsLayer)),
+          workflowsLayer,
+        );
+      `,
+      ["effect/prefer-layer-provide-merge"],
+    );
+
+    assert.notStrictEqual(result.status, 0);
+    assert.match(result.output, /Layer\.provideMerge/);
+  });
+
+  it("rejects provide-then-merge wiring with dependency first", () => {
+    const result = lint(
+      `
+        import { Layer } from "effect";
+
+        const TestLayer = Layer.merge(
+          PgLive,
+          DrizzlePg.layer({ schema: auth }).pipe(Layer.provide(PgLive)),
+        );
+      `,
+      ["effect/prefer-layer-provide-merge"],
+    );
+
+    assert.notStrictEqual(result.status, 0);
+    assert.match(result.output, /dependency is provided and then merged back/);
+  });
+
+  it("accepts plain provide when dependencies are not merged back", () => {
+    const result = lint(
+      `
+        import { Layer } from "effect";
+
+        const AuthLayer = AuthLive.pipe(Layer.provide(AuthStorageLive));
+      `,
+      ["effect/prefer-layer-provide-merge"],
+    );
+
+    assert.strictEqual(result.status, 0, result.output);
+  });
+
+  it("rejects repeated layer factory calls in one merge graph", () => {
+    const result = lint(
+      `
+        import { Layer } from "effect";
+
+        const AppLayer = Layer.mergeAll(
+          makeDb(config),
+          makeDb(config),
+        );
+      `,
+      ["effect/no-repeated-layer-factory"],
+    );
+
+    assert.notStrictEqual(result.status, 0);
+    assert.match(result.output, /Bind it once/);
+  });
+
+  it("accepts shared layer values and different factory inputs", () => {
+    const result = lint(
+      `
+        import { Layer } from "effect";
+
+        const DbLive = makeDb(config);
+        const AppLayer = Layer.mergeAll(
+          DbLive,
+          makeDb(otherConfig),
+          makeQueue(config),
+        );
+      `,
+      ["effect/no-repeated-layer-factory"],
+    );
+
+    assert.strictEqual(result.status, 0, result.output);
+  });
+});
+
 describe("reference-backed boundary rules", () => {
   it("allows plain Effect runners at JS boundaries", () => {
     const result = lint(`Effect.runPromise(program);`, ["effect/prefer-shared-managed-runtime"]);

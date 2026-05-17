@@ -164,6 +164,8 @@ Then add style and architecture rules as teams converge on the conventions.
 | `effect/prefer-inline-context-service-shape`    | Keeps service shape, config input, and layer construction local.      |
 | `effect/no-service-option`                      | Makes required dependencies impossible to silently omit.              |
 | `effect/no-nested-layer-provide`                | Keeps layer graphs flatter and easier to inspect.                     |
+| `effect/prefer-layer-provide-merge`             | Replaces manual provide-then-merge wiring with explicit intent.       |
+| `effect/no-repeated-layer-factory`              | Encourages binding layer factories once before composition.           |
 | `effect/prefer-static-effect`                   | Avoids zero-argument thunks around already-lazy Effects.              |
 | `effect/prefer-stream-from-pubsub`              | Exposes PubSub events as scoped Streams instead of raw subscriptions. |
 | `effect/prefer-service-log-annotations`         | Ensures service constructor logs carry service metadata.              |
