@@ -560,6 +560,53 @@ describe("no-raw-indexeddb", () => {
   });
 });
 
+describe("conflicting review guidance", () => {
+  it("allows pure synchronous tests to stay regular it blocks", () => {
+    const result = lint(
+      `
+        import { assert, it } from "@effect/vitest";
+
+        it("formats", () => {
+          assert.strictEqual(format(1), "1");
+        });
+      `,
+      ["effect/prefer-effect-vitest"],
+      "fixture.test.ts",
+    );
+
+    assert.strictEqual(result.status, 0, result.output);
+  });
+
+  it("rejects primitive service values inferred from Layer.succeed", () => {
+    const result = lint(
+      `
+        import { Context, Layer } from "effect";
+
+        class Token extends Context.Service<Token>()("app/Token") {
+          static readonly layer = Layer.succeed(Token)("secret");
+        }
+      `,
+      ["effect/no-primitive-context-service"],
+    );
+
+    assert.notStrictEqual(result.status, 0);
+    assert.match(result.output, /Wrap primitive values/);
+  });
+
+  it("allows deliberate GenericTag keys", () => {
+    const result = lint(
+      `
+        import { Context } from "effect";
+
+        export const CurrentTenant = Context.GenericTag<Tenant>("app/CurrentTenant");
+      `,
+      ["effect/prefer-context-service"],
+    );
+
+    assert.strictEqual(result.status, 0, result.output);
+  });
+});
+
 describe("no-effect-run-in-tests", () => {
   it("accepts manual Effect runners outside test files", () => {
     const result = lint(

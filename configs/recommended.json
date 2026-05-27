@@ -14,8 +14,13 @@
     "effect/no-effect-ignore": "error",
     "effect/no-silent-error-swallow": "error",
     "effect/no-json-parse": "error",
+    "effect/no-schema-error-response-leak": "error",
     "effect/no-unknown-shape-probing": "error",
     "effect/no-unsupported-effect-api": "error",
-    "effect/no-unknown-runtime-requirements": "error"
+    "effect/no-unknown-runtime-requirements": "error",
+    "effect/no-bare-yield-in-effect-generator": "error",
+    "effect/no-floating-effect-in-generator": "error",
+    "effect/no-return-effect-from-generator": "error",
+    "effect/no-effect-run-in-effect-code": "error"
   }
 }

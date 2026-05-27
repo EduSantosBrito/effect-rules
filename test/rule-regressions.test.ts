@@ -41,6 +41,11 @@ const ruleRegressionFixtures: ReadonlyArray<RuleFixture> = [
     message: /Do not use unknown as the Effect requirement type/,
   },
   {
+    rule: "no-process-env",
+    source: `const token = process.env.AUTH_TOKEN;`,
+    message: /Effect Config/,
+  },
+  {
     rule: "prefer-option-from-nullable",
     source: `const option = value !== null ? Option.some(value) : Option.none();`,
     message: /Option\.fromNullable/,
@@ -66,6 +71,26 @@ const ruleRegressionFixtures: ReadonlyArray<RuleFixture> = [
     message: /Effect\.async is unavailable/,
   },
   {
+    rule: "no-bare-yield-in-effect-generator",
+    source: `Effect.gen(function* () { yield Effect.succeed(1); });`,
+    message: /Use yield\*/,
+  },
+  {
+    rule: "no-floating-effect-in-generator",
+    source: `Effect.gen(function* () { Effect.logInfo("started"); });`,
+    message: /Do not leave Effects floating/,
+  },
+  {
+    rule: "no-return-effect-from-generator",
+    source: `Effect.gen(function* () { return Effect.succeed(1); });`,
+    message: /Do not return an Effect/,
+  },
+  {
+    rule: "no-effect-run-in-effect-code",
+    source: `Effect.gen(function* () { return yield* Effect.promise(() => Effect.runPromise(program)); });`,
+    message: /Do not run Effects inside Effect code/,
+  },
+  {
     rule: "no-unnecessary-effect-tx",
     source: `Effect.tx(Effect.succeed(1));`,
     message: /Use Effect\.tx only around transactional/,
@@ -76,9 +101,24 @@ const ruleRegressionFixtures: ReadonlyArray<RuleFixture> = [
     message: /Do not swallow errors/,
   },
   {
+    rule: "prefer-map-error-for-wrapping",
+    source: `Effect.catchAll((error) => Effect.fail(new WrappedError({ cause: error })));`,
+    message: /Use Effect\.mapError/,
+  },
+  {
     rule: "no-service-option",
     source: `Effect.serviceOption(Service);`,
     message: /Do not use Effect\.serviceOption/,
+  },
+  {
+    rule: "no-primitive-context-service",
+    source: `class Token extends Context.Service<Token, string>()("app/Token") {}`,
+    message: /Context\.Service shapes should be objects/,
+  },
+  {
+    rule: "no-promise-service-method",
+    source: `class Users extends Context.Service<Users, { readonly find: () => Promise<User> }>()("app/Users") {}`,
+    message: /not Promise/,
   },
   {
     rule: "no-nested-layer-provide",
@@ -94,6 +134,16 @@ const ruleRegressionFixtures: ReadonlyArray<RuleFixture> = [
     rule: "no-repeated-layer-factory",
     source: `Layer.mergeAll(makeDb(config), makeDb(config));`,
     message: /Bind it once/,
+  },
+  {
+    rule: "prefer-layer-constructor-semantics",
+    source: `Layer.effect(Service, Effect.succeed({}));`,
+    message: /Use Layer\.succeed/,
+  },
+  {
+    rule: "prefer-fork-scoped-in-layer",
+    source: `Layer.effectDiscard(Effect.gen(function* () { yield* Effect.fork(worker); }));`,
+    message: /forkScoped/,
   },
   {
     rule: "prefer-static-effect",
@@ -112,7 +162,32 @@ const ruleRegressionFixtures: ReadonlyArray<RuleFixture> = [
   },
   { rule: "no-void-expression", source: `void value;`, message: /Do not use void expressions/ },
   { rule: "no-direct-fetch", source: `fetch("/api");`, message: /Do not call fetch directly/ },
+  {
+    rule: "no-native-clock-in-effect",
+    source: `Effect.sync(() => Date.now());`,
+    message: /Clock or DateTime/,
+  },
+  {
+    rule: "no-native-random-in-effect",
+    source: `Effect.sync(() => Math.random());`,
+    message: /Effect Random/,
+  },
+  {
+    rule: "no-timer-api-in-effect",
+    source: `Effect.sync(() => setTimeout(run, 100));`,
+    message: /Effect\.sleep/,
+  },
+  {
+    rule: "no-promise-combinators-in-effect",
+    source: `Effect.tryPromise(() => Promise.all(tasks));`,
+    message: /Effect\.all/,
+  },
   { rule: "no-json-parse", source: `JSON.parse(text);`, message: /Parse JSON with Effect Schema/ },
+  {
+    rule: "no-sync-schema-decode-in-effect",
+    source: `Effect.gen(function* () { return Schema.decodeUnknownSync(User)(input); });`,
+    message: /decodeUnknownEffect/,
+  },
   {
     rule: "no-schema-error-response-leak",
     source: `
@@ -148,7 +223,11 @@ const ruleRegressionFixtures: ReadonlyArray<RuleFixture> = [
     source: `import { it } from "vitest";`,
     message: /Import test helpers from @effect\/vitest/,
   },
-  { rule: "prefer-effect-vitest", source: `it("runs", () => {});`, message: /Prefer it\.effect/ },
+  {
+    rule: "prefer-effect-vitest",
+    source: `it("runs", () => Effect.succeed(1));`,
+    message: /Prefer it\.effect/,
+  },
   {
     rule: "prefer-effect-vitest-assert",
     source: `import { expect } from "@effect/vitest";`,
