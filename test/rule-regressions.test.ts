@@ -265,7 +265,7 @@ const ruleRegressionFixtures: ReadonlyArray<RuleFixture> = [
   },
   {
     rule: "no-promise-catch",
-    source: `promise.catch(() => undefined);`,
+    source: `const promise = Promise.resolve(); promise.catch(() => undefined);`,
     message: /Do not use Promise \.catch/,
   },
   {
@@ -387,4 +387,19 @@ describe("rule regressions", () => {
       assert.match(result.output, fixture.message);
     });
   }
+});
+
+describe("no-promise-catch", () => {
+  it("rejects catch on Promise factory results", () => {
+    const result = lint(`Promise.resolve().catch(() => undefined);`, ["effect/no-promise-catch"]);
+
+    assert.notStrictEqual(result.status, 0);
+    assert.match(result.output, /Do not use Promise \.catch/);
+  });
+
+  it("accepts non-Promise catch helpers such as ErrorBoundary.catch", () => {
+    const result = lint(`ErrorBoundary.catch(404, () => null);`, ["effect/no-promise-catch"]);
+
+    assert.strictEqual(result.status, 0, result.output);
+  });
 });

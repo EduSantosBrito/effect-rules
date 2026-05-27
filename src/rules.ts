@@ -43,6 +43,7 @@ type Node = Ranged & {
   readonly discriminant?: unknown;
   readonly superClass?: unknown;
   readonly static?: unknown;
+  readonly async?: unknown;
   readonly returnType?: unknown;
   readonly typeName?: unknown;
   readonly exprName?: unknown;
@@ -1340,7 +1341,7 @@ const returnTypeAnnotation = (value: unknown): Node | undefined => {
 
 const isPromiseType = (value: unknown): boolean => {
   const name = typeReferenceName(value);
-  return name === "Promise" || name === "globalThis.Promise";
+  return name === "Promise" || name === "PromiseLike" || name === "globalThis.Promise";
 };
 
 const isPromiseServiceMember = (value: unknown): boolean => {
@@ -2829,16 +2830,110 @@ const noUnknownErrorMessage = defineRule({
   },
 });
 
+const promiseStaticFactoryNames = new Set([
+  "Promise.resolve",
+  "Promise.reject",
+  "Promise.all",
+  "Promise.allSettled",
+  "Promise.any",
+  "Promise.race",
+  "globalThis.Promise.resolve",
+  "globalThis.Promise.reject",
+  "globalThis.Promise.all",
+  "globalThis.Promise.allSettled",
+  "globalThis.Promise.any",
+  "globalThis.Promise.race",
+]);
+
+const promiseReturningGlobalCalls = new Set(["fetch"]);
+
+const isPromiseReturningFunctionType = (value: unknown): boolean => {
+  const node = asNode(value);
+  return node?.type === "TSFunctionType" && isPromiseType(returnTypeAnnotation(node));
+};
+
+const isPromiseReturningFunction = (value: unknown): boolean => {
+  const node = asNode(value);
+  if (node === undefined || !isFunction(node)) return false;
+  return node.async === true || isPromiseType(returnTypeAnnotation(node));
+};
+
+const isKnownPromiseExpression = (
+  value: unknown,
+  promiseVariables: ReadonlySet<string>,
+  promiseReturningFunctions: ReadonlySet<string>,
+): boolean => {
+  const node = asNode(value);
+  if (node === undefined) return false;
+
+  const name = identifierName(node);
+  if (name !== undefined) return promiseVariables.has(name);
+
+  if (isPromiseConstructor(node)) return true;
+
+  if (node.type !== "CallExpression") return false;
+
+  const calleeName = expressionName(node.callee);
+  if (calleeName !== undefined && promiseStaticFactoryNames.has(calleeName)) return true;
+  if (calleeName !== undefined && promiseReturningGlobalCalls.has(calleeName)) return true;
+  if (calleeName !== undefined && promiseReturningFunctions.has(calleeName)) return true;
+
+  const callee = asNode(node.callee);
+  if (callee?.type !== "MemberExpression") return false;
+
+  const methodName = propertyName(callee.property);
+  return (
+    (methodName === "then" || methodName === "finally") &&
+    isKnownPromiseExpression(callee.object, promiseVariables, promiseReturningFunctions)
+  );
+};
+
 const noPromiseCatch = defineRule({
   meta: { type: "problem", docs: { description: "Disallow Promise-style .catch()." } },
   createOnce(context) {
+    const promiseVariables = new Set<string>();
+    const promiseReturningFunctions = new Set<string>();
+
     return {
+      FunctionDeclaration(node) {
+        const name = identifierName(node.id);
+        if (name !== undefined && isPromiseReturningFunction(node)) {
+          promiseReturningFunctions.add(name);
+        }
+      },
+      VariableDeclarator(node) {
+        const name = identifierName(node.id);
+        if (name === undefined) return;
+
+        const annotation = typeAnnotation(node.id);
+        if (isPromiseReturningFunctionType(annotation) || isPromiseReturningFunction(node.init)) {
+          promiseReturningFunctions.add(name);
+          return;
+        }
+
+        if (
+          isPromiseType(annotation) ||
+          isKnownPromiseExpression(node.init, promiseVariables, promiseReturningFunctions)
+        ) {
+          promiseVariables.add(name);
+        }
+      },
+      AssignmentExpression(node) {
+        const name = identifierName(node.left);
+        if (
+          name !== undefined &&
+          isKnownPromiseExpression(node.right, promiseVariables, promiseReturningFunctions)
+        ) {
+          promiseVariables.add(name);
+        }
+      },
       CallExpression(node) {
         const callee = asNode(node.callee);
         if (
           callee?.type !== "MemberExpression" ||
           isIdentifier(callee.object, "Effect") ||
-          propertyName(callee.property) !== "catch"
+          propertyName(callee.property) !== "catch" ||
+          !isKnownPromiseExpression(callee.object, promiseVariables, promiseReturningFunctions)
         ) {
           return;
         }
