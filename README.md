@@ -69,7 +69,7 @@ JSON starter set:
 }
 ```
 
-Or add the plugin manually and enable only the rules you want.
+Or add the plugin manually and enable only the rules you want. Published versions `0.3.5` and newer can be loaded directly by Oxlint's JS plugin resolver without a local shim.
 
 ```json
 {
@@ -92,6 +92,8 @@ For local development before publishing:
   "jsPlugins": ["./node_modules/effect-rules/src/index.ts"]
 }
 ```
+
+If Oxlint reports `Failed to load JS plugin: effect-rules`, make sure you are on `effect-rules@0.3.5` or newer.
 
 ## Recommended Starting Set
 
@@ -295,3 +297,5 @@ bun install
 bun test
 bun run check
 ```
+
+`bun run check` builds the package, smoke-tests that Node can import `dist/index.js`, and verifies Oxlint can load `jsPlugins: ["effect-rules"]` from the built package. Keep relative ESM imports fully specified in source files, for example `./rules.js` rather than `./rules`, so the emitted package works with Node's ESM resolver.

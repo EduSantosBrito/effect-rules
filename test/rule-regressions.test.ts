@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
-import { lint } from "./lint";
+import { lint } from "./lint.js";
 
 type RuleFixture = {
   readonly rule: string;

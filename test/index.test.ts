@@ -1,8 +1,8 @@
 import { assert, describe, it } from "@effect/vitest";
 import { join } from "node:path";
-import { recommended, strict } from "../src/configs";
-import plugin from "../src/index";
-import { lint, lintWithExtends } from "./lint";
+import { recommended, strict } from "../src/configs.js";
+import plugin from "../src/index.js";
+import { lint, lintWithExtends } from "./lint.js";
 
 const root = process.cwd();
 
